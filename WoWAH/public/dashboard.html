@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WoW Auction House</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <span class="navbar-brand">WoW Auction House</span>
+    <div class="navbar-links" id="navLinks"></div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ── Status bar ── -->
+    <div class="status-bar">
+      <span id="statusText" class="muted">Loading…</span>
+      <div class="toolbar-right">
+        <select id="regionSelect" class="region-select">
+          <option value="eu">EU</option>
+          <option value="us">US</option>
+          <option value="kr">KR</option>
+          <option value="tw">TW</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="globalAlert" class="alert hidden"></div>
+
+    <!-- ── Tabs ── -->
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="commodities">Commodities</button>
+      <button class="tab-btn" data-tab="realms">Connected Realms</button>
+    </div>
+
+    <!-- ── Tab: Commodities ── -->
+    <div id="tab-commodities" class="tab-pane">
+      <div class="tab-toolbar">
+        <select id="expansionSelect" class="region-select">
+          <option value="Midnight">Midnight</option>
+          <option value="The War Within">The War Within</option>
+          <option value="Dragonflight">Dragonflight</option>
+          <option value="Shadowlands">Shadowlands</option>
+          <option value="Battle for Azeroth">Battle for Azeroth</option>
+          <option value="Legion">Legion</option>
+          <option value="Warlords of Draenor">Warlords of Draenor</option>
+          <option value="Mists of Pandaria">Mists of Pandaria</option>
+          <option value="Cataclysm">Cataclysm</option>
+          <option value="Wrath of the Lich King">Wrath of the Lich King</option>
+          <option value="The Burning Crusade">The Burning Crusade</option>
+          <option value="Classic">Classic</option>
+          <option value="all">All expansions</option>
+        </select>
+      </div>
+      <div id="professionFilter" class="prof-filter"></div>
+      <p id="craftingEmptyMsg" class="muted">Loading crafting data…</p>
+      <div id="craftingGroups"></div>
+    </div>
+
+    <!-- ── Tab: Connected Realms ── -->
+    <div id="tab-realms" class="tab-pane hidden">
+      <div class="tab-toolbar">
+        <select id="realmExpansionSelect" class="region-select">
+          <option value="Midnight">Midnight</option>
+          <option value="The War Within">The War Within</option>
+          <option value="Dragonflight">Dragonflight</option>
+          <option value="Shadowlands">Shadowlands</option>
+          <option value="Battle for Azeroth">Battle for Azeroth</option>
+          <option value="Legion">Legion</option>
+          <option value="Warlords of Draenor">Warlords of Draenor</option>
+          <option value="Mists of Pandaria">Mists of Pandaria</option>
+          <option value="Cataclysm">Cataclysm</option>
+          <option value="Wrath of the Lich King">Wrath of the Lich King</option>
+          <option value="The Burning Crusade">The Burning Crusade</option>
+          <option value="Classic">Classic</option>
+          <option value="all">All expansions</option>
+        </select>
+        <select id="realmSelect" class="region-select">
+          <option value="">— select realm —</option>
+        </select>
+      </div>
+      <div id="realmProfessionFilter" class="prof-filter"></div>
+      <p id="realmEmptyMsg" class="muted">Select a realm to load crafting data.</p>
+      <div id="realmCraftingGroups"></div>
+    </div>
+
+  </main>
+
+  <!-- ── Chart modal ── -->
+  <div id="chartModal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span id="chartTitle">Price History</span>
+        <button onclick="closeChart()" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="chart-controls">
+          <button class="btn btn-sm chart-range active" data-days="7">7d</button>
+          <button class="btn btn-sm chart-range" data-days="14">14d</button>
+          <button class="btn btn-sm chart-range" data-days="30">30d</button>
+        </div>
+        <div id="analysisBar" class="analysis-bar"></div>
+        <canvas id="priceChart" height="100"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var activeChart  = null;
+    var activeItemId = null;
+
+    // ── Nav ───────────────────────────────────────────────────
+    fetch('/api/auth/me')
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(user) {
+        var nav = document.getElementById('navLinks');
+        if (user) {
+          nav.innerHTML = '<a href="/settings.html">Settings</a><button class="btn btn-sm" id="logoutBtn">Log out</button>';
+          document.getElementById('logoutBtn').addEventListener('click', function() {
+            fetch('/api/auth/logout', { method: 'POST' }).then(function() { window.location.reload(); });
+          });
+        } else {
+          nav.innerHTML = '<a href="/login.html">Log in</a><a href="/register.html">Register</a>';
+        }
+      });
+
+    // ── Tabs ──────────────────────────────────────────────────
+    var activeTab = 'commodities';
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelectorAll('.tab-pane').forEach(function(p) { p.classList.add('hidden'); });
+        btn.classList.add('active');
+        activeTab = btn.dataset.tab;
+        document.getElementById('tab-' + activeTab).classList.remove('hidden');
+      });
+    });
+
+    // ── Region selector ───────────────────────────────────────
+    var regionSelect   = document.getElementById('regionSelect');
+    regionSelect.value = localStorage.getItem('wowah_region') || 'eu';
+
+    regionSelect.addEventListener('change', function() {
+      localStorage.setItem('wowah_region', regionSelect.value);
+      loadStatus();
+      loadCrafting();
+      loadRealms();
+    });
+
+    function getRegion() { return regionSelect.value; }
+
+    // ── Expansion selector (commodities) ──────────────────────
+    var expansionSelect   = document.getElementById('expansionSelect');
+    expansionSelect.value = localStorage.getItem('wowah_expansion') || 'Midnight';
+
+    expansionSelect.addEventListener('change', function() {
+      localStorage.setItem('wowah_expansion', expansionSelect.value);
+      filterByExpansion(expansionSelect.value, 'craftingGroups', 'craftingEmptyMsg');
+    });
+
+    // ── Expansion selector (realms) ───────────────────────────
+    var realmExpansionSelect   = document.getElementById('realmExpansionSelect');
+    realmExpansionSelect.value = localStorage.getItem('wowah_realm_expansion') || 'Midnight';
+
+    realmExpansionSelect.addEventListener('change', function() {
+      localStorage.setItem('wowah_realm_expansion', realmExpansionSelect.value);
+      filterByExpansion(realmExpansionSelect.value, 'realmCraftingGroups', 'realmEmptyMsg');
+    });
+
+    function filterByExpansion(exp, groupsId, emptyId) {
+      var profGroups = document.querySelectorAll('#' + groupsId + ' .profession-group');
+      var anyVisible = false;
+      profGroups.forEach(function(profGroup) {
+        var hasVisible = false;
+        profGroup.querySelectorAll('.expansion-group').forEach(function(g) {
+          var show = (exp === 'all' || g.dataset.expansion === exp);
+          g.style.display = show ? '' : 'none';
+          if (show) hasVisible = true;
+        });
+        profGroup.style.display = hasVisible ? '' : 'none';
+        if (hasVisible) anyVisible = true;
+      });
+      var empty = document.getElementById(emptyId);
+      if (!anyVisible && profGroups.length > 0) {
+        empty.classList.remove('hidden');
+        empty.textContent = 'No crafts found for "' + exp + '".';
+      } else {
+        empty.classList.add('hidden');
+      }
+    }
+
+    // ── Status ────────────────────────────────────────────────
+    function loadStatus() {
+      fetch('/api/prices/status?region=' + getRegion())
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          var txt = d.last_fetch
+            ? 'Last update: ' + d.last_fetch + ' UTC (' + getRegion().toUpperCase() + ') — ' + d.total_data_points.toLocaleString() + ' data points'
+            : 'No data yet for ' + getRegion().toUpperCase();
+          document.getElementById('statusText').textContent = txt;
+        })
+        .catch(function() {});
+    }
+    loadStatus();
+
+    // ── Realm selector ────────────────────────────────────────
+    var realmSelect = document.getElementById('realmSelect');
+
+    function loadRealms() {
+      fetch('/api/realms?region=' + getRegion())
+        .then(function(r) { return r.json(); })
+        .then(function(realms) {
+          var saved = localStorage.getItem('wowah_realm_' + getRegion()) || '';
+          realmSelect.innerHTML = '<option value="">— select realm —</option>' +
+            realms.map(function(r) {
+              return '<option value="' + r.id + '"' + (String(r.id) === saved ? ' selected' : '') + '>' + escHtml(r.name) + '</option>';
+            }).join('');
+          if (saved) loadRealmCrafting();
+        })
+        .catch(function() {});
+    }
+    loadRealms();
+
+    realmSelect.addEventListener('change', function() {
+      if (realmSelect.value) {
+        localStorage.setItem('wowah_realm_' + getRegion(), realmSelect.value);
+        loadRealmCrafting();
+      }
+    });
+
+    // ── Commodities crafting ──────────────────────────────────
+    loadCrafting();
+
+    function loadCrafting() {
+      document.getElementById('craftingEmptyMsg').textContent = 'Loading crafting data…';
+      document.getElementById('craftingEmptyMsg').classList.remove('hidden');
+      document.getElementById('craftingGroups').innerHTML = '';
+      document.getElementById('professionFilter').innerHTML = '';
+
+      fetch('/api/recipes/crafting?region=' + getRegion())
+        .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(result) {
+          if (!result.ok) {
+            document.getElementById('craftingEmptyMsg').textContent = result.data.error || 'Failed to load crafting data.';
+            return;
+          }
+          renderCrafting(result.data, 'craftingGroups', 'professionFilter', 'craftingEmptyMsg', expansionSelect.value);
+        })
+        .catch(function() {
+          document.getElementById('craftingEmptyMsg').textContent = 'Could not load crafting data.';
+        });
+    }
+
+    // ── Realm crafting ────────────────────────────────────────
+    function loadRealmCrafting() {
+      var realmId = realmSelect.value;
+      if (!realmId) return;
+
+      document.getElementById('realmEmptyMsg').textContent = 'Loading…';
+      document.getElementById('realmEmptyMsg').classList.remove('hidden');
+      document.getElementById('realmCraftingGroups').innerHTML = '';
+      document.getElementById('realmProfessionFilter').innerHTML = '';
+
+      fetch('/api/recipes/crafting-realm?region=' + getRegion() + '&realm_id=' + realmId)
+        .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(result) {
+          if (!result.ok) {
+            document.getElementById('realmEmptyMsg').textContent = result.data.error || 'Failed to load realm crafting data.';
+            return;
+          }
+          renderCrafting(result.data, 'realmCraftingGroups', 'realmProfessionFilter', 'realmEmptyMsg', realmExpansionSelect.value);
+        })
+        .catch(function() {
+          document.getElementById('realmEmptyMsg').textContent = 'Could not load realm crafting data.';
+        });
+    }
+
+    // ── Shared render logic ───────────────────────────────────
+    var EXPANSION_ORDER = [
+      'Midnight', 'The War Within', 'Dragonflight', 'Shadowlands',
+      'Battle for Azeroth', 'Legion', 'Warlords of Draenor',
+      'Mists of Pandaria', 'Cataclysm', 'Wrath of the Lich King',
+      'The Burning Crusade', 'Classic', 'Unknown'
+    ];
+
+    function renderCrafting(items, groupsId, filterId, emptyId, currentExpansion) {
+      var groupsEl = document.getElementById(groupsId);
+      var filterEl = document.getElementById(filterId);
+      var empty    = document.getElementById(emptyId);
+
+      if (!items.length) {
+        groupsEl.innerHTML = '';
+        filterEl.innerHTML = '';
+        empty.classList.remove('hidden');
+        empty.textContent = 'No profitable crafts found.';
+        return;
+      }
+      empty.classList.add('hidden');
+
+      var grouped = {};
+      items.forEach(function(item) {
+        var prof = item.profession || 'Unknown';
+        var exp  = item.expansion  || 'Unknown';
+        if (!grouped[prof]) grouped[prof] = {};
+        if (!grouped[prof][exp]) grouped[prof][exp] = [];
+        grouped[prof][exp].push(item);
+      });
+
+      var professions = Object.keys(grouped).sort();
+
+      filterEl.innerHTML = professions.map(function(prof) {
+        var id = groupsId + '-prof-' + prof.replace(/\s+/g, '-');
+        return '<button class="prof-btn" onclick="document.getElementById(\'' + id + '\').scrollIntoView({behavior:\'smooth\',block:\'start\'});document.getElementById(\'' + id + '\').querySelector(\'details\').open=true">' + escHtml(prof) + '</button>';
+      }).join('');
+
+      var THEAD = '<thead><tr>' +
+        '<th style="width:44px"></th>' +
+        '<th>Crafted Item</th>' +
+        '<th>Sell Price <span class="hint">(×qty)</span></th>' +
+        '<th>Direct Cost</th>' +
+        '<th>Optimal Cost <span class="hint">(cheapest quality)</span></th>' +
+        '<th>Profit</th>' +
+        '<th>Trend</th>' +
+        '<th style="width:32px"></th>' +
+        '</tr></thead>';
+
+      groupsEl.innerHTML = professions.map(function(prof) {
+        var profData   = grouped[prof];
+        var totalCount = EXPANSION_ORDER.concat(
+          Object.keys(profData).filter(function(e) { return EXPANSION_ORDER.indexOf(e) < 0; })
+        ).reduce(function(s, e) { return s + (profData[e] ? profData[e].length : 0); }, 0);
+
+        var expansionsHtml = EXPANSION_ORDER
+          .concat(Object.keys(profData).filter(function(e) { return EXPANSION_ORDER.indexOf(e) < 0; }))
+          .filter(function(exp) { return profData[exp] && profData[exp].length > 0 && exp !== 'Unknown'; })
+          .map(function(exp) {
+            var expItems = profData[exp];
+            var rows = expItems.map(function(item) { return buildCraftingRow(item); }).join('');
+            return '<div class="expansion-group" data-expansion="' + escHtml(exp) + '">' +
+              '<details open>' +
+              '<summary><span class="exp-name">' + escHtml(exp) + '</span><span class="exp-count">' + expItems.length + ' crafts</span></summary>' +
+              '<div><table>' + THEAD + '<tbody>' + rows + '</tbody></table></div>' +
+              '</details></div>';
+          }).join('');
+
+        var id = groupsId + '-prof-' + prof.replace(/\s+/g, '-');
+        return '<div class="profession-group" id="' + id + '">' +
+          '<details open>' +
+          '<summary><span class="prof-name">' + escHtml(prof) + '</span><span class="prof-count">' + totalCount + ' crafts</span></summary>' +
+          '<div class="expansion-groups">' + expansionsHtml + '</div>' +
+          '</details></div>';
+      }).join('');
+
+      filterByExpansion(currentExpansion, groupsId, emptyId);
+      loadTrendBadges(groupsEl);
+    }
+
+    function buildCraftingRow(item) {
+      var iconHtml    = item.item_icon
+        ? '<img src="' + item.item_icon + '" alt="" class="item-icon" onerror="this.style.display=\'none\'">'
+        : '<span class="item-icon-placeholder"></span>';
+      var name        = item.item_name || ('Item #' + item.item_id);
+      var sellTotal   = item.sell_price * item.crafted_quantity;
+      var profitClass = (item.optimal_profit > 0 || item.direct_profit > 0) ? 'profit-positive' : 'profit-negative';
+
+      var reagentRows = item.reagents.map(function(rg) {
+        var rgName      = rg.name || ('Item #' + rg.item_id);
+        var hasVariants = rg.variants && rg.variants.length > 1;
+        var cheaperNote = (rg.best_price < rg.unit_price)
+          ? ' <span class="cheaper-badge">cheaper variant available</span>' : '';
+
+        var variantHtml = '';
+        if (hasVariants) {
+          variantHtml = rg.variants.map(function(v) {
+            var vName      = v.name || ('Item #' + v.item_id);
+            var isCheapest = v.unit_price === rg.best_price;
+            return '<tr class="variant-row hidden">' +
+              '<td></td>' +
+              '<td class="reagent-name" style="padding-left:52px">' +
+                (isCheapest ? '★ ' : '  ') +
+                '<a href="https://www.wowhead.com/item=' + v.item_id + '" target="_blank" rel="noopener">' + escHtml(vName) + '</a>' +
+              '</td>' +
+              '<td></td><td></td>' +
+              '<td class="price' + (isCheapest ? ' best-price' : '') + '">' + formatGold(v.unit_price * rg.quantity) + '</td>' +
+              '<td></td>' +
+              '<td><span class="trend-badge" data-item="' + v.item_id + '">…</span></td>' +
+              '<td></td></tr>';
+          }).join('');
+        }
+
+        return '<tr class="reagent-row hidden">' +
+          '<td></td>' +
+          '<td class="reagent-name">↳ <a href="https://www.wowhead.com/item=' + rg.item_id + '" target="_blank" rel="noopener">' + escHtml(rgName) + '</a>' +
+            ' ×' + rg.quantity + cheaperNote +
+            (hasVariants ? ' <button class="btn-toggle btn-tiny" onclick="toggleVariants(this)">+</button>' : '') +
+          '</td>' +
+          '<td></td>' +
+          '<td class="price">' + formatGold(rg.unit_price * rg.quantity) + '</td>' +
+          '<td class="price best-price">' + formatGold(rg.best_price * rg.quantity) + '</td>' +
+          '<td></td>' +
+          '<td><span class="trend-badge" data-item="' + rg.item_id + '">…</span></td>' +
+          '<td></td></tr>' + variantHtml;
+      }).join('');
+
+      return '<tr class="crafting-row" data-item="' + item.item_id + '">' +
+        '<td>' + iconHtml + '</td>' +
+        '<td><a href="https://www.wowhead.com/item=' + item.item_id + '" target="_blank" rel="noopener">' + escHtml(name) + '</a>' +
+          '<span class="craft-qty"> ×' + item.crafted_quantity + '</span></td>' +
+        '<td class="price">' + formatGold(sellTotal) + '</td>' +
+        '<td class="price">' + formatGold(item.direct_cost) + '</td>' +
+        '<td class="price best-price">' + formatGold(item.optimal_cost) + '</td>' +
+        '<td class="price ' + profitClass + '">' + formatGold(item.optimal_profit) + '</td>' +
+        '<td><span class="trend-badge" data-item="' + item.item_id + '">…</span>' +
+          '<button class="chart-btn" onclick="openChart(' + item.item_id + ', \'' + escHtml(name) + '\')" title="Price history">📈</button></td>' +
+        '<td><button class="btn-toggle" onclick="toggleReagents(this)">+</button></td>' +
+        '</tr>' + reagentRows;
+    }
+
+    function loadTrendBadges(container) {
+      var badges = container.querySelectorAll('.trend-badge');
+      var seen = {};
+      for (var i = 0; i < badges.length; i++) {
+        var itemId = badges[i].getAttribute('data-item');
+        if (seen[itemId]) continue;
+        seen[itemId] = true;
+        (function(id) {
+          fetch('/api/prices/analysis/' + id + '?region=' + getRegion())
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              var label, cls;
+              if (d.data_points < 2)             { label = '—';         cls = ''; }
+              else if (d.trend === 'rising')      { label = '↑ Rising';  cls = 'trend-up'; }
+              else if (d.trend === 'falling')     { label = '↓ Falling'; cls = 'trend-down'; }
+              else                                { label = '→ Stable';  cls = 'trend-stable'; }
+              if (d.buy_signal)  { label += ' 🟢 Buy';  cls = 'trend-buy'; }
+              if (d.sell_signal) { label += ' 🔴 Sell'; cls = 'trend-sell'; }
+              container.querySelectorAll('.trend-badge[data-item="' + id + '"]').forEach(function(el) {
+                el.textContent = label;
+                el.className = 'trend-badge ' + cls;
+              });
+            })
+            .catch(function() {});
+        })(itemId);
+      }
+    }
+
+    function toggleReagents(btn) {
+      var row = btn.closest('tr');
+      var next = row.nextElementSibling;
+      while (next && (next.classList.contains('reagent-row') || next.classList.contains('variant-row'))) {
+        if (next.classList.contains('reagent-row')) next.classList.toggle('hidden');
+        else next.classList.add('hidden');
+        next = next.nextElementSibling;
+      }
+      btn.textContent = btn.textContent === '+' ? '−' : '+';
+    }
+
+    function toggleVariants(btn) {
+      var row = btn.closest('tr');
+      var next = row.nextElementSibling;
+      while (next && next.classList.contains('variant-row')) {
+        next.classList.toggle('hidden');
+        next = next.nextElementSibling;
+      }
+      btn.textContent = btn.textContent === '+' ? '−' : '+';
+    }
+
+    // ── Price chart modal ─────────────────────────────────────
+    function openChart(itemId, name) {
+      activeItemId = itemId;
+      document.getElementById('chartTitle').textContent = name + ' — Price History';
+      document.getElementById('chartModal').classList.remove('hidden');
+      loadChart(itemId, 7);
+    }
+
+    function closeChart() {
+      document.getElementById('chartModal').classList.add('hidden');
+      if (activeChart) { activeChart.destroy(); activeChart = null; }
+    }
+
+    document.querySelectorAll('.chart-range').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.chart-range').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        if (activeItemId) loadChart(activeItemId, parseInt(btn.getAttribute('data-days')));
+      });
+    });
+
+    function loadChart(itemId, days) {
+      if (activeChart) { activeChart.destroy(); activeChart = null; }
+      Promise.all([
+        fetch('/api/prices/history/' + itemId + '?region=' + getRegion() + '&days=' + days).then(function(r) { return r.json(); }),
+        fetch('/api/prices/analysis/' + itemId + '?region=' + getRegion() + '&days=' + days).then(function(r) { return r.json(); }),
+      ]).then(function(results) {
+        var history  = results[0];
+        var analysis = results[1];
+        var bar = document.getElementById('analysisBar');
+        if (analysis.data_points > 0) {
+          var signal = '';
+          if (analysis.buy_signal)       signal = '<span class="badge-buy">🟢 Good time to BUY</span>';
+          else if (analysis.sell_signal) signal = '<span class="badge-sell">🔴 Good time to SELL</span>';
+          bar.innerHTML =
+            '<span>Avg: <b>' + formatGoldPlain(analysis.avg_price) + '</b></span>' +
+            '<span>Min: <b>' + formatGoldPlain(analysis.min_price) + '</b></span>' +
+            '<span>Max: <b>' + formatGoldPlain(analysis.max_price) + '</b></span>' +
+            '<span>Trend: <b>' + analysis.trend + '</b></span>' +
+            (signal ? '<span>' + signal + '</span>' : '') +
+            '<span class="muted">' + analysis.data_points + ' data points</span>';
+        } else {
+          bar.innerHTML = '<span class="muted">Not enough history yet.</span>';
+        }
+        if (!history.length) return;
+        var labels = history.map(function(h) { return h.recorded_at.replace('T', ' ').slice(0, 16); });
+        var prices = history.map(function(h) { return h.unit_price / 10000; });
+        var ctx = document.getElementById('priceChart').getContext('2d');
+        activeChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [{
+              label: 'Price (gold)',
+              data: prices,
+              borderColor: '#28a745',
+              backgroundColor: 'rgba(40,167,69,0.1)',
+              borderWidth: 2,
+              pointRadius: history.length > 50 ? 0 : 3,
+              tension: 0.2,
+              fill: true,
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { maxTicksLimit: 8, maxRotation: 30 } },
+              y: { ticks: { callback: function(v) { return v + 'g'; } } },
+            },
+          },
+        });
+      }).catch(function() {});
+    }
+
+    document.getElementById('chartModal').addEventListener('click', function(e) {
+      if (e.target === this) closeChart();
+    });
+
+    // ── Helpers ───────────────────────────────────────────────
+    function formatGold(copper) {
+      var gold   = Math.floor(copper / 10000);
+      var silver = Math.floor((copper % 10000) / 100);
+      var cop    = copper % 100;
+      return '<span class="gold">' + gold + 'g</span> <span class="silver">' + silver + 's</span> <span class="copper">' + cop + 'c</span>';
+    }
+
+    function formatGoldPlain(copper) {
+      if (!copper) return '—';
+      return Math.floor(copper / 10000) + 'g ' + Math.floor((copper % 10000) / 100) + 's';
+    }
+
+    function escHtml(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function showAlert(msg, type) {
+      var el = document.getElementById('globalAlert');
+      el.textContent = msg;
+      el.className = 'alert ' + type;
+    }
+  </script>
+</body>
+</html>

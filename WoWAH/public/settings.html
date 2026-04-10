@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — WoW AH</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <nav class="navbar">
+    <span class="navbar-brand">WoW Auction House</span>
+    <div class="navbar-links">
+      <a href="/dashboard.html">Dashboard</a>
+      <button id="logoutBtn" class="btn btn-sm">Log out</button>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h2>Settings</h2>
+    <div class="card">
+      <h3>Account</h3>
+      <p>Logged in as: <strong id="userEmail">…</strong></p>
+    </div>
+  </main>
+
+  <script>
+    fetch('/api/auth/me')
+      .then(function(r) {
+        if (!r.ok) return window.location.href = '/login.html';
+        return r.json();
+      })
+      .then(function(user) {
+        if (user) document.getElementById('userEmail').textContent = user.email;
+      })
+      .catch(function() { window.location.href = '/login.html'; });
+
+    document.getElementById('logoutBtn').addEventListener('click', function() {
+      fetch('/api/auth/logout', { method: 'POST' }).then(function() {
+        window.location.href = '/login.html';
+      });
+    });
+  </script>
+</body>
+</html>

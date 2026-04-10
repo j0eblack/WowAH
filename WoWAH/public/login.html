@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — WoW AH</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="auth-page">
+  <div class="card">
+    <h1>WoW Auction House</h1>
+    <h2>Log in</h2>
+
+    <div id="alert" class="alert hidden"></div>
+
+    <form id="loginForm">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required autofocus>
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-full">Log in</button>
+    </form>
+
+    <p class="auth-link">Don't have an account? <a href="/register.html">Register</a></p>
+  </div>
+
+  <script>
+    // Show success message if redirected after email verification
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('verified') === '1') {
+      showAlert('Email verified! You can now log in.', 'success');
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) return showAlert(data.error, 'error');
+        window.location.href = '/dashboard.html';
+      } catch {
+        showAlert('Could not connect to server.', 'error');
+      }
+    });
+
+    function showAlert(msg, type) {
+      const el = document.getElementById('alert');
+      el.textContent = msg;
+      el.className = `alert ${type}`;
+    }
+  </script>
+</body>
+</html>
