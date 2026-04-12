@@ -104,6 +104,18 @@ var itemsService     = require('./lib/itemsService');
 var MONTH_INTERVAL   = 30 * 24 * 60 * 60 * 1000;
 var WEEK_INTERVAL    =  7 * 24 * 60 * 60 * 1000;
 
+// Node's setTimeout silently overflows at 2^31-1 ms (~24.8 days).
+// Values above that are coerced to 1 ms, causing immediate re-fires.
+// This wrapper chains timeouts to handle arbitrarily large delays.
+var MAX_TIMEOUT_MS = 2147483647;
+function safeLargeTimeout(fn, ms) {
+  if (ms <= MAX_TIMEOUT_MS) {
+    setTimeout(fn, ms);
+  } else {
+    setTimeout(function() { safeLargeTimeout(fn, ms - MAX_TIMEOUT_MS); }, MAX_TIMEOUT_MS);
+  }
+}
+
 function msUntilNext(tableQuery, interval) {
   var row = db.prepare(tableQuery).get();
   if (!row || !row.ts) return 0;
@@ -111,38 +123,80 @@ function msUntilNext(tableQuery, interval) {
   return remaining > 0 ? remaining : 0;
 }
 
-// Realms: run at every start (due=0 always), then every month.
+// onDone is called once the run finishes (success or failure), used by scheduleRealmsSync
+// to signal the startup chain. Omitted for subsequent monthly runs.
+function runRealmsSync(onDone) {
+  console.log('[RealmsScheduler] Starting realms sync…');
+  realmsService.run()
+    .then(function() {
+      db.prepare("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('realms_synced_at', datetime('now'))").run();
+      console.log('[RealmsScheduler] Done.');
+    })
+    .catch(function(e){ console.error('[RealmsScheduler] Failed:', e.message); })
+    .finally(function() {
+      if (onDone) onDone();
+      safeLargeTimeout(runRealmsSync, MONTH_INTERVAL);
+    });
+}
+
+// Returns a Promise that resolves when realms are ready:
+//   - immediately if data is fresh (schedules future sync in background)
+//   - after the sync completes if data is missing/stale
 function scheduleRealmsSync() {
-  setTimeout(function() {
-    console.log('[RealmsScheduler] Starting realms sync…');
-    realmsService.run()
-      .then(function()  { console.log('[RealmsScheduler] Done.'); })
-      .catch(function(e){ console.error('[RealmsScheduler] Failed:', e.message); })
-      .finally(function(){ setTimeout(scheduleRealmsSync, MONTH_INTERVAL); });
-  }, 0);
+  var count = db.prepare('SELECT COUNT(*) AS n FROM realms').get().n;
+  var due = count === 0 ? 0 : msUntilNext(
+    "SELECT (SELECT value FROM sync_meta WHERE key = 'realms_synced_at') AS ts",
+    MONTH_INTERVAL
+  );
+  if (due > 0) {
+    console.log('[RealmsScheduler] Data is fresh, next sync in', Math.round(due / 86400000), 'd.');
+    safeLargeTimeout(runRealmsSync, due);
+    return Promise.resolve();
+  }
+  return new Promise(function(resolve) { runRealmsSync(resolve); });
 }
 
-// Recipes: run at every start, then every month.
-// If new recipes were found, immediately trigger an items sync too.
+function runRecipesSync() {
+  console.log('[RecipesScheduler] Starting recipes sync…');
+  recipesService.run()
+    .then(function(result) {
+      db.prepare("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('recipes_synced_at', datetime('now'))").run();
+      console.log('[RecipesScheduler] Done. New recipes:', result.newCount);
+      if (result.newCount > 0) {
+        console.log('[RecipesScheduler] New recipes found — triggering items sync.');
+        itemsService.run()
+          .then(function()  { console.log('[ItemsScheduler] Done (triggered by new recipes).'); })
+          .catch(function(e){ console.error('[ItemsScheduler] Failed:', e.message); });
+      }
+    })
+    .catch(function(e){ console.error('[RecipesScheduler] Failed:', e.message); })
+    .finally(function(){ safeLargeTimeout(runRecipesSync, MONTH_INTERVAL); });
+}
+
+// Recipes: at startup, skip if synced within the last month. Then run on a fixed monthly loop.
 function scheduleRecipesSync() {
-  setTimeout(function() {
-    console.log('[RecipesScheduler] Starting recipes sync…');
-    recipesService.run()
-      .then(function(result) {
-        console.log('[RecipesScheduler] Done. New recipes:', result.newCount);
-        if (result.newCount > 0) {
-          console.log('[RecipesScheduler] New recipes found — triggering items sync.');
-          itemsService.run()
-            .then(function()  { console.log('[ItemsScheduler] Done (triggered by new recipes).'); })
-            .catch(function(e){ console.error('[ItemsScheduler] Failed:', e.message); });
-        }
-      })
-      .catch(function(e){ console.error('[RecipesScheduler] Failed:', e.message); })
-      .finally(function(){ setTimeout(scheduleRecipesSync, MONTH_INTERVAL); });
-  }, 0);
+  var count = db.prepare('SELECT COUNT(*) AS n FROM recipes').get().n;
+  var due = count === 0 ? 0 : msUntilNext(
+    "SELECT (SELECT value FROM sync_meta WHERE key = 'recipes_synced_at') AS ts",
+    MONTH_INTERVAL
+  );
+  if (due > 0) {
+    console.log('[RecipesScheduler] Data is fresh, next sync in', Math.round(due / 86400000), 'd.');
+  }
+  safeLargeTimeout(runRecipesSync, due);
 }
 
-// Items: run at start if DB is empty or last sync > 1 week ago, then every week.
+// Always runs items sync immediately. Returns a Promise that resolves when done.
+// After completion schedules the next recurring check via scheduleItemsSync.
+function runItemsSync() {
+  console.log('[ItemsScheduler] Starting items sync…');
+  return itemsService.run()
+    .then(function()  { console.log('[ItemsScheduler] Done.'); })
+    .catch(function(e){ console.error('[ItemsScheduler] Failed:', e.message); })
+    .finally(function() { setTimeout(scheduleItemsSync, WEEK_INTERVAL); });
+}
+
+// Recurring check: skip if synced within the last week, otherwise run.
 function scheduleItemsSync() {
   var due = msUntilNext(
     'SELECT fetched_at AS ts FROM items ORDER BY fetched_at DESC LIMIT 1',
@@ -150,20 +204,19 @@ function scheduleItemsSync() {
   );
   if (due > 0) {
     console.log('[ItemsScheduler] Last sync was recent, next run in', Math.round(due / 3600000), 'h.');
+    setTimeout(scheduleItemsSync, due);
+    return;
   }
-  setTimeout(function() {
-    console.log('[ItemsScheduler] Starting weekly items sync…');
-    itemsService.run()
-      .then(function()  { console.log('[ItemsScheduler] Done.'); })
-      .catch(function(e){ console.error('[ItemsScheduler] Failed:', e.message); })
-      .finally(function(){ scheduleItemsSync(); });
-  }, due);
+  runItemsSync();
 }
 
-// Stagger startup: realms immediately, recipes after 2 min, items after 5 min.
-setTimeout(scheduleRealmsSync,  0);
-setTimeout(scheduleRecipesSync, 2 * 60 * 1000);
-setTimeout(scheduleItemsSync,   5 * 60 * 1000);
+// Startup chain: realms → items → recipes (in sequence).
+// Items needs realms in the DB (for realm auction item discovery).
+// Recipes needs items in the DB (for name lookups).
+// Items always runs at startup regardless of last sync time.
+scheduleRealmsSync().then(function() {
+  runItemsSync().finally(scheduleRecipesSync);
+});
 
 // ── Realm auction scheduler (every 2 hours, staggered) ───────
 var REALM_INTERVAL = 2 * 60 * 60 * 1000;

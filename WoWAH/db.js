@@ -103,6 +103,11 @@ db.exec(`
     PRIMARY KEY (item_id, quality, bonus_list, connected_realm_id, region)
   );
 
+  CREATE TABLE IF NOT EXISTS sync_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_price_history_region_item    ON price_history(region, item_id, recorded_at);
   CREATE INDEX IF NOT EXISTS idx_realm_prices_realm_item      ON realm_prices(region, connected_realm_id, item_id, recorded_at);
   CREATE INDEX IF NOT EXISTS idx_current_prices_region        ON current_prices(region, item_id);

@@ -24,6 +24,7 @@ async function fetchAndSave(regionKey) {
   var response = await axios.get(region.host + '/data/wow/auctions/commodities', {
     params: { namespace: region.namespace, locale: region.locale },
     headers: { 'Authorization': 'Bearer ' + token },
+    timeout: 15000,
   });
 
   // Commodities never have bonus_lists or quality modifiers
