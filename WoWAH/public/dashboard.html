@@ -337,7 +337,7 @@
           .concat(Object.keys(profData).filter(function(e) { return EXPANSION_ORDER.indexOf(e) < 0; }))
           .filter(function(exp) { return profData[exp] && profData[exp].length > 0 && exp !== 'Unknown'; })
           .map(function(exp) {
-            var expItems = profData[exp];
+            var expItems = profData[exp].slice().sort(function(a, b) { return b.optimal_profit - a.optimal_profit; });
             var rows = expItems.map(function(item) { return buildCraftingRow(item); }).join('');
             return '<div class="expansion-group" data-expansion="' + escHtml(exp) + '">' +
               '<details open>' +

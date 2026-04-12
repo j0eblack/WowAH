@@ -97,6 +97,74 @@ Object.keys(blizzard.REGIONS).forEach(function(regionKey, index) {
 });
 
 
+// ── Realms sync (every start + every month) ───────────────────
+var realmsService    = require('./lib/realmsService');
+var recipesService   = require('./lib/recipesService');
+var itemsService     = require('./lib/itemsService');
+var MONTH_INTERVAL   = 30 * 24 * 60 * 60 * 1000;
+var WEEK_INTERVAL    =  7 * 24 * 60 * 60 * 1000;
+
+function msUntilNext(tableQuery, interval) {
+  var row = db.prepare(tableQuery).get();
+  if (!row || !row.ts) return 0;
+  var remaining = interval - (Date.now() - new Date(row.ts + ' UTC').getTime());
+  return remaining > 0 ? remaining : 0;
+}
+
+// Realms: run at every start (due=0 always), then every month.
+function scheduleRealmsSync() {
+  setTimeout(function() {
+    console.log('[RealmsScheduler] Starting realms sync…');
+    realmsService.run()
+      .then(function()  { console.log('[RealmsScheduler] Done.'); })
+      .catch(function(e){ console.error('[RealmsScheduler] Failed:', e.message); })
+      .finally(function(){ setTimeout(scheduleRealmsSync, MONTH_INTERVAL); });
+  }, 0);
+}
+
+// Recipes: run at every start, then every month.
+// If new recipes were found, immediately trigger an items sync too.
+function scheduleRecipesSync() {
+  setTimeout(function() {
+    console.log('[RecipesScheduler] Starting recipes sync…');
+    recipesService.run()
+      .then(function(result) {
+        console.log('[RecipesScheduler] Done. New recipes:', result.newCount);
+        if (result.newCount > 0) {
+          console.log('[RecipesScheduler] New recipes found — triggering items sync.');
+          itemsService.run()
+            .then(function()  { console.log('[ItemsScheduler] Done (triggered by new recipes).'); })
+            .catch(function(e){ console.error('[ItemsScheduler] Failed:', e.message); });
+        }
+      })
+      .catch(function(e){ console.error('[RecipesScheduler] Failed:', e.message); })
+      .finally(function(){ setTimeout(scheduleRecipesSync, MONTH_INTERVAL); });
+  }, 0);
+}
+
+// Items: run at start if DB is empty or last sync > 1 week ago, then every week.
+function scheduleItemsSync() {
+  var due = msUntilNext(
+    'SELECT fetched_at AS ts FROM items ORDER BY fetched_at DESC LIMIT 1',
+    WEEK_INTERVAL
+  );
+  if (due > 0) {
+    console.log('[ItemsScheduler] Last sync was recent, next run in', Math.round(due / 3600000), 'h.');
+  }
+  setTimeout(function() {
+    console.log('[ItemsScheduler] Starting weekly items sync…');
+    itemsService.run()
+      .then(function()  { console.log('[ItemsScheduler] Done.'); })
+      .catch(function(e){ console.error('[ItemsScheduler] Failed:', e.message); })
+      .finally(function(){ scheduleItemsSync(); });
+  }, due);
+}
+
+// Stagger startup: realms immediately, recipes after 2 min, items after 5 min.
+setTimeout(scheduleRealmsSync,  0);
+setTimeout(scheduleRecipesSync, 2 * 60 * 1000);
+setTimeout(scheduleItemsSync,   5 * 60 * 1000);
+
 // ── Realm auction scheduler (every 2 hours, staggered) ───────
 var REALM_INTERVAL = 2 * 60 * 60 * 1000;
 var REALM_STARTUP_DELAY = 5 * 60 * 1000; // 5 min after start (after commodities)
