@@ -4,9 +4,11 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
-const axios    = require('axios');
-const db       = require('../db');
-const blizzard = require('./blizzard');
+const axios        = require('axios');
+const db           = require('../db');
+const blizzard     = require('./blizzard');
+var itemsService = require('./itemsService');
+var wagoService  = require('./wagoService');
 
 var FETCH_DELAY = 80;
 var RETRY_DELAY = 5000;
@@ -46,7 +48,7 @@ async function blizzardGet(url, params, token) {
   }
 }
 
-function upsertRecipe(r, profName, expansion, stmts) {
+function upsertRecipe(r, profName, expansion, stmts, reagentsBySpell) {
   var craftedItemId;
   if (r.crafted_item) {
     craftedItemId = r.crafted_item.id;
@@ -58,8 +60,19 @@ function upsertRecipe(r, profName, expansion, stmts) {
   var qty = r.crafted_quantity
     ? (r.crafted_quantity.value || r.crafted_quantity.minimum || 1) : 1;
 
-  var reagents = (r.reagents || []).slice();
+  // Reagents: wago.tools SpellReagents is the primary source (complete list).
+  // Fall back to Blizzard API reagents for spells not present in SpellReagents.
+  var wagoReagents = reagentsBySpell && reagentsBySpell.get(r.id);
+  var reagents;
+  if (wagoReagents && wagoReagents.length) {
+    reagents = wagoReagents.map(function(rg) {
+      return { reagent: { id: rg.itemId }, quantity: rg.count };
+    });
+  } else {
+    reagents = (r.reagents || []).slice();
+  }
 
+  // modified_crafting_slots: optional reagents resolved by slot-type name.
   (r.modified_crafting_slots || []).forEach(function(slot) {
     var slotName = slot.reagent_slot_type && slot.reagent_slot_type.name;
     if (!slotName) return;
@@ -121,31 +134,63 @@ async function collectRecipeRefs(base, ns, locale, token) {
   return refs;
 }
 
-async function fetchAndUpsertRecipes(refs, base, ns, locale, token, stmts) {
-  console.log('[RecipesService] Upserting ' + refs.length + ' recipes with ' + CONCURRENCY + ' parallel workers…');
+// Phase 1: download all recipe details from Blizzard, return raw data.
+async function downloadRecipes(refs, base, ns, locale, token) {
+  console.log('[RecipesService] Downloading ' + refs.length + ' recipe details with ' + CONCURRENCY + ' parallel workers…');
 
-  var index    = 0;
-  var total    = refs.length;
-  var newCount = 0;
+  var results = new Array(refs.length);
+  var index   = 0;
+  var total   = refs.length;
 
   async function worker() {
     while (index < total) {
-      var ref = refs[index++];
+      var i   = index++;
+      var ref = refs[i];
       var rd  = await blizzardGet(base + '/data/wow/recipe/' + ref.id, { namespace: ns, locale }, token);
-      var isNew = upsertRecipe(rd.data, ref.profName, ref.expansion, stmts);
-      if (isNew) {
-        newCount++;
-        process.stdout.write('[RecipesService] + ' + rd.data.name + '\n');
-      }
+      results[i] = { data: rd.data, profName: ref.profName, expansion: ref.expansion };
+      if (i % 100 === 0) process.stdout.write('[RecipesService] Downloaded ' + (i + 1) + ' / ' + total + '\r');
     }
   }
 
   var workers = [];
   for (var i = 0; i < CONCURRENCY; i++) workers.push(worker());
   await Promise.all(workers);
+  process.stdout.write('\n');
 
+  return results;
+}
+
+// Phase 2: upsert pre-downloaded recipe data into the DB.
+// reagentsBySpell: Map<spellId, [{itemId, count}]> from wago.tools SpellReagents.
+// When a spell has wago reagent data it takes precedence over the Blizzard API list.
+function upsertAllRecipes(rawRecipes, stmts, reagentsBySpell) {
+  var newCount = 0;
+  rawRecipes.forEach(function(r) {
+    var isNew = upsertRecipe(r.data, r.profName, r.expansion, stmts, reagentsBySpell);
+    if (isNew) {
+      newCount++;
+      process.stdout.write('[RecipesService] + ' + r.data.name + '\n');
+    }
+  });
   return newCount;
 }
+
+// Expansions in descending order (newest first).
+var EXPANSION_ORDER = [
+  'Midnight',
+  'The War Within',
+  'Dragonflight',
+  'Shadowlands',
+  'Battle for Azeroth',
+  'Legion',
+  'Warlords of Draenor',
+  'Mists of Pandaria',
+  'Cataclysm',
+  'Wrath of the Lich King',
+  'The Burning Crusade',
+  'Classic',
+  null, // unmapped tiers
+];
 
 async function run() {
   var token  = await blizzard.getToken();
@@ -154,6 +199,45 @@ async function run() {
   var ns     = region.staticNamespace;
   var locale = region.locale;
 
+  // ── Phase 1: fetch SpellReagents from wago.tools ─────────────
+  var reagentsBySpell = await wagoService.fetchSpellReagents();
+
+  // ── Phase 2: collect recipe refs from the profession index ───
+  var refs = await collectRecipeRefs(base, ns, locale, token);
+
+  // ── Phase 3: download all recipe details from Blizzard ───────
+  var rawRecipes = await downloadRecipes(refs, base, ns, locale, token);
+
+  // ── Phase 4: collect ALL item IDs across all expansions ──────
+  // Use wago reagents where available; fall back to Blizzard API reagents.
+  // modified_crafting_slots are resolved by name at upsert time (after items
+  // are stored), so they are not collected here.
+  var allItemIds = new Set();
+  rawRecipes.forEach(function(r) {
+    if (r.data.crafted_item && r.data.crafted_item.id) {
+      allItemIds.add(r.data.crafted_item.id);
+    }
+    var wagoReagents = reagentsBySpell.get(r.data.id);
+    if (wagoReagents && wagoReagents.length) {
+      wagoReagents.forEach(function(rg) { allItemIds.add(rg.itemId); });
+    } else {
+      (r.data.reagents || []).forEach(function(rg) {
+        if (rg.reagent && rg.reagent.id) allItemIds.add(rg.reagent.id);
+      });
+    }
+  });
+
+  // ── Phase 5: stream ItemSparse from wago.tools ───────────────
+  var wagoItemsMap = await wagoService.streamItemSparse(allItemIds);
+
+  // ── Phase 6: group recipes by expansion ──────────────────────
+  var byExpansion = {};
+  rawRecipes.forEach(function(r) {
+    var key = r.expansion !== null && r.expansion !== undefined ? r.expansion : '__null__';
+    if (!byExpansion[key]) byExpansion[key] = [];
+    byExpansion[key].push(r);
+  });
+
   var stmts = {
     findItemByName: db.prepare('SELECT id FROM items WHERE name = ? LIMIT 1'),
     findRecipe:     db.prepare('SELECT id FROM recipes WHERE id = ?'),
@@ -161,12 +245,54 @@ async function run() {
     insertReagent:  db.prepare('INSERT OR REPLACE INTO reagents (recipe_id, item_id, quantity) VALUES (?, ?, ?)'),
   };
 
-  var refs     = await collectRecipeRefs(base, ns, locale, token);
-  var newCount = await fetchAndUpsertRecipes(refs, base, ns, locale, token, stmts);
-  var total    = db.prepare('SELECT COUNT(*) AS n FROM recipes').get().n;
+  var totalNew = 0;
 
-  console.log('[RecipesService] Done. Total recipes in DB: ' + total + ' (' + newCount + ' new)');
-  return { total, newCount };
+  // ── Phase 7: per expansion (newest → oldest): items first, then recipes ─
+  for (var ei = 0; ei < EXPANSION_ORDER.length; ei++) {
+    var expansion = EXPANSION_ORDER[ei];
+    var key = expansion !== null ? expansion : '__null__';
+    var expansionRecipes = byExpansion[key] || [];
+    if (!expansionRecipes.length) continue;
+
+    console.log('[RecipesService] ══ ' + (expansion || 'Unknown') + ' (' + expansionRecipes.length + ' recipes) ══');
+
+    // Collect item IDs for this expansion (crafted items + reagents).
+    // modified_crafting_slots are resolved by name at upsert time.
+    var recipeItemIds = new Set();
+    expansionRecipes.forEach(function(r) {
+      if (r.data.crafted_item && r.data.crafted_item.id) {
+        recipeItemIds.add(r.data.crafted_item.id);
+      }
+      var wagoReagents = reagentsBySpell.get(r.data.id);
+      if (wagoReagents && wagoReagents.length) {
+        wagoReagents.forEach(function(rg) { recipeItemIds.add(rg.itemId); });
+      } else {
+        (r.data.reagents || []).forEach(function(rg) {
+          if (rg.reagent && rg.reagent.id) recipeItemIds.add(rg.reagent.id);
+        });
+      }
+    });
+
+    var entries = Array.from(recipeItemIds).map(function(id) {
+      return { id: id, quality: 0, bonus_list: '' };
+    });
+
+    console.log('[RecipesService] Storing ' + entries.length + ' items for this expansion…');
+
+    // Items first: store all relevant items for this expansion from wago data.
+    await itemsService.fetchNewItemsFromWago(entries, wagoItemsMap);
+
+    // Recipes second: upsert recipes + reagents.
+    // findItemByName lookups for modified_crafting_slots now succeed because
+    // those items were stored in the step above.
+    var newCount = upsertAllRecipes(expansionRecipes, stmts, reagentsBySpell);
+    totalNew += newCount;
+    console.log('[RecipesService] ' + (expansion || 'Unknown') + ' done — ' + newCount + ' new recipes.');
+  }
+
+  var total = db.prepare('SELECT COUNT(*) AS n FROM recipes').get().n;
+  console.log('[RecipesService] All expansions done. Total recipes in DB: ' + total + ' (' + totalNew + ' new)');
+  return { total, newCount: totalNew };
 }
 
 module.exports = { run };

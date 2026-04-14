@@ -121,6 +121,8 @@ try { db.exec("ALTER TABLE recipes ADD COLUMN expansion TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE items ADD COLUMN quality INTEGER NOT NULL DEFAULT 0"); } catch (e) {}
 try { db.exec("ALTER TABLE items ADD COLUMN bonus_list TEXT NOT NULL DEFAULT ''"); } catch (e) {}
 try { db.exec("ALTER TABLE items ADD COLUMN item_level INTEGER NOT NULL DEFAULT 0"); } catch (e) {}
+try { db.exec("ALTER TABLE items ADD COLUMN item_class INTEGER"); } catch (e) {}
+try { db.exec("ALTER TABLE items ADD COLUMN item_subclass INTEGER"); } catch (e) {}
 try { db.exec("ALTER TABLE price_history ADD COLUMN quality INTEGER NOT NULL DEFAULT 0"); } catch (e) {}
 try { db.exec("ALTER TABLE price_history ADD COLUMN bonus_list TEXT NOT NULL DEFAULT ''"); } catch (e) {}
 try { db.exec("ALTER TABLE current_prices ADD COLUMN quality INTEGER NOT NULL DEFAULT 0"); } catch (e) {}

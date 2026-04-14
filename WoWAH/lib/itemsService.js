@@ -134,8 +134,8 @@ async function fetchNewItems(itemEntries, base, staticNs, locale, token) {
   console.log('[ItemsService] Fetching ' + missing.length + ' new entries with ' + CONCURRENCY + ' parallel workers…');
 
   var upsert = db.prepare(
-    "INSERT OR REPLACE INTO items (id, quality, bonus_list, item_level, name, icon, fetched_at) " +
-    "VALUES (?, ?, ?, ?, ?, ?, datetime('now'))"
+    "INSERT OR REPLACE INTO items (id, quality, bonus_list, item_level, name, icon, item_class, item_subclass, fetched_at) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
   );
   var index = 0;
   var done  = 0;
@@ -155,9 +155,11 @@ async function fetchNewItems(itemEntries, base, staticNs, locale, token) {
       );
       if (!itemRes) { done++; continue; }
 
-      var name      = itemRes.data.name || ('Item #' + entry.id);
-      var itemLevel = itemRes.data.level || 0;
-      var icon      = '';
+      var name         = itemRes.data.name || ('Item #' + entry.id);
+      var itemLevel    = itemRes.data.level || 0;
+      var itemClass    = (itemRes.data.item_class    && itemRes.data.item_class.id    != null) ? itemRes.data.item_class.id    : null;
+      var itemSubclass = (itemRes.data.item_subclass && itemRes.data.item_subclass.id != null) ? itemRes.data.item_subclass.id : null;
+      var icon         = '';
 
       var mediaRes = await blizzardGetOrNull(
         base + '/data/wow/media/item/' + entry.id,
@@ -169,7 +171,7 @@ async function fetchNewItems(itemEntries, base, staticNs, locale, token) {
         if (assets.length) icon = assets[0].value;
       }
 
-      upsert.run(entry.id, entry.quality, entry.bonus_list, itemLevel, name, icon);
+      upsert.run(entry.id, entry.quality, entry.bonus_list, itemLevel, name, icon, itemClass, itemSubclass);
       done++;
       if (done % 50 === 0 || done === total) {
         process.stdout.write('[ItemsService] Stored ' + done + ' / ' + total + '\r');
@@ -184,6 +186,21 @@ async function fetchNewItems(itemEntries, base, staticNs, locale, token) {
   process.stdout.write('\n');
 }
 
+// Fetches item details (name, icon, …) for a specific list of item IDs.
+// Only requests the base variant (quality=0, bonus_list=''), which is all the
+// crafting tab needs.  Already-known items are skipped automatically by fetchNewItems.
+async function fetchItemBatch(itemIds) {
+  if (!itemIds || !itemIds.length) return;
+  var token   = await blizzard.getToken();
+  var eu      = blizzard.REGIONS['eu'];
+  var entries = itemIds.map(function(id) { return { id: id, quality: 0, bonus_list: '' }; });
+  console.log('[ItemsService] Fetching details for ' + entries.length + ' items…');
+  await fetchNewItems(entries, eu.host, eu.staticNamespace, eu.locale, token);
+  console.log('[ItemsService] Item batch done.');
+}
+
+// Full AH scan — discovers every item currently listed and fetches details for
+// unknown ones.  Very slow (hours).  Use fetchItemBatch() for targeted fetching.
 async function run() {
   var token = await blizzard.getToken();
   var eu    = blizzard.REGIONS['eu'];
@@ -203,4 +220,51 @@ async function run() {
   console.log('[ItemsService] Done.');
 }
 
-module.exports = { run };
+// Stores item entries using data already fetched from wago.tools ItemSparse.
+// No per-item API calls — wagoItemsMap must be the Map returned by
+// wagoService.streamItemSparse().  Items already in the DB are skipped.
+async function fetchNewItemsFromWago(itemEntries, wagoItemsMap) {
+  if (!itemEntries || !itemEntries.length) return;
+
+  var known = new Set(
+    db.prepare('SELECT id, quality, bonus_list FROM items').all()
+      .map(function(r) { return r.id + '|' + r.quality + '|' + r.bonus_list; })
+  );
+  var missing = itemEntries.filter(function(e) {
+    return !known.has(e.id + '|' + e.quality + '|' + e.bonus_list);
+  });
+
+  if (!missing.length) {
+    console.log('[ItemsService] All items already in DB, skipping.');
+    return;
+  }
+
+  console.log('[ItemsService] Storing ' + missing.length + ' items from wago.tools data…');
+
+  var upsert = db.prepare(
+    "INSERT OR REPLACE INTO items (id, quality, bonus_list, item_level, name, icon, item_class, item_subclass, fetched_at) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
+  );
+
+  var done = 0;
+  missing.forEach(function(entry) {
+    var data = wagoItemsMap.get(entry.id) || {};
+    upsert.run(
+      entry.id,
+      entry.quality,
+      entry.bonus_list,
+      data.itemLevel  || 0,
+      data.name       || ('Item #' + entry.id),
+      '',               // icons are not available from wago.tools
+      data.classId    || null,
+      data.subclassId || null
+    );
+    done++;
+    if (done % 100 === 0 || done === missing.length) {
+      process.stdout.write('[ItemsService] Stored ' + done + ' / ' + missing.length + '\r');
+    }
+  });
+  process.stdout.write('\n');
+}
+
+module.exports = { run, fetchItemBatch, collectCommodityItems, collectRealmItems, fetchNewItems, fetchNewItemsFromWago };
