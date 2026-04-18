@@ -119,8 +119,10 @@ async function collectRealmItems(regionKey, base, ns, locale, token) {
 }
 
 async function fetchNewItems(itemEntries, base, staticNs, locale, token) {
+  // Exclude items with no icon — they were stored by the wago path and need
+  // a Blizzard API fetch to populate the icon and verify other fields.
   var known = new Set(
-    db.prepare('SELECT id, quality, bonus_list FROM items').all()
+    db.prepare("SELECT id, quality, bonus_list FROM items WHERE icon IS NOT NULL AND icon != ''").all()
       .map(function(r) { return r.id + '|' + r.quality + '|' + r.bonus_list; })
   );
   var missing = itemEntries.filter(function(e) {

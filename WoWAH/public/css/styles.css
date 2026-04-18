@@ -710,6 +710,22 @@ table.hidden { display: none; }
   padding-bottom: 6px;
 }
 
+.quality-tier-row td {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: var(--bg-surface-alt2) !important;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.qtier-label {
+  color: #c9a227;
+  font-weight: 700;
+  letter-spacing: 1px;
+  margin-right: 4px;
+}
+.qtier-sell { font-weight: 600; }
+.qtier-toggle { margin-right: 2px; color: #c9a227; }
+
 .reagent-name { padding-left: 28px !important; }
 
 .craft-qty { color: var(--text-muted); font-size: 12px; margin-left: 4px; }
@@ -769,6 +785,12 @@ table.hidden { display: none; }
 
 .profit-positive { color: var(--profit-pos); font-weight: 700; }
 .profit-negative { color: var(--profit-neg); font-weight: 700; }
+.profit-best { outline: 2px solid var(--profit-pos); outline-offset: -2px; border-radius: 3px; }
+.sell-tier-row { display: flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.sell-tier-label { font-size: 0.75em; color: var(--text-muted); min-width: 16px; }
+.sell-lq-price { color: var(--text-muted); font-size: 0.88em; }
+.gear-section-divider { display: flex; align-items: center; gap: 10px; margin: 28px 0 12px; color: var(--text-muted); font-size: 0.85em; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+.gear-section-divider::before, .gear-section-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 
 .btn-toggle {
   background: none;
@@ -880,6 +902,11 @@ table.hidden { display: none; }
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .prof-btn:hover {
+  background: var(--pill-hover-bg);
+  color: var(--pill-hover-text);
+  border-color: var(--pill-hover-border);
+}
+.prof-btn.active {
   background: var(--pill-hover-bg);
   color: var(--pill-hover-text);
   border-color: var(--pill-hover-border);
@@ -1032,6 +1059,16 @@ table.hidden { display: none; }
   color: var(--text-muted);
   margin-top: 2px;
 }
+
+/* Snipe table */
+#snipeTable td { vertical-align: top; padding-top: 8px; padding-bottom: 8px; }
+.snipe-realm-list { display: flex; flex-direction: column; gap: 3px; }
+.snipe-realm-entry { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.snipe-realm-best .snipe-realm-name { color: var(--text-primary); font-weight: 600; }
+.snipe-realm-best .snipe-realm-price { color: var(--profit-pos); font-weight: 700; }
+.snipe-realm-name { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; flex-shrink: 1; }
+.snipe-realm-price { color: var(--text-secondary); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.snipe-prof-badge { display: inline-block; font-size: 11px; color: var(--text-muted); background: var(--bg-surface-alt); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-left: 5px; vertical-align: middle; }
 
 /* Flipping table — tighter vertical padding since cells have multi-line content */
 #flipTable td { vertical-align: top; padding-top: 10px; padding-bottom: 10px; }
@@ -1386,3 +1423,142 @@ tr.char-hidden { display: none; }
 
 .bmac-nav-btn:hover  { background: #f0cf00; transform: translateY(-1px); }
 .bmac-nav-btn:active { transform: translateY(0); }
+
+/* ── CraftSim / ForgeFinder import ───────────────────────────── */
+.craftsim-section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 8px 0 0;
+  background: var(--bg-surface-alt);
+}
+
+.craftsim-summary {
+  cursor: pointer;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.craftsim-summary::-webkit-details-marker { display: none; }
+
+.craftsim-count {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.craftsim-body {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.craftsim-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-family: monospace;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  padding: 6px 8px;
+  resize: vertical;
+  outline: none;
+}
+.craftsim-textarea:focus { border-color: var(--input-focus); box-shadow: 0 0 0 2px var(--input-focus-ring); }
+
+.craftsim-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.craftsim-clear-btn {
+  background: none;
+  border: 1px solid var(--btn-outline-border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--btn-outline-text);
+}
+.craftsim-clear-btn:hover { background: var(--btn-outline-hover); }
+
+.craftsim-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.craftsim-status-ok  { color: var(--profit-pos); }
+.craftsim-status-err { color: var(--profit-neg); }
+
+/* ── Per-recipe stats row ────────────────────────────────────── */
+.recipe-stats-row td {
+  background: var(--bg-surface-alt);
+  border-top: 1px dashed var(--border);
+  padding: 6px 10px;
+}
+
+.recipe-stats-editor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.recipe-stats-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.recipe-stat-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.recipe-stat-input {
+  width: 60px;
+  padding: 3px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  outline: none;
+}
+.recipe-stat-input:focus { border-color: var(--input-focus); }
+
+.craftsim-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--exp-bg);
+  color: var(--exp-text);
+  border: 1px solid var(--exp-border);
+  white-space: nowrap;
+}
+
+.recipe-stats-reset {
+  background: none;
+  border: 1px solid var(--btn-outline-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.recipe-stats-reset:hover { background: var(--btn-outline-hover); color: var(--text-primary); }

@@ -99,9 +99,15 @@ async function fetchSpellReagents() {
 //   quality   → OverallQualityID | Quality
 //   classId   → ClassID | Class
 //   subclassId→ SubclassID | Subclass
-async function streamItemSparse(itemIds) {
+// itemIds:   Set<number> — collect rows whose ID is in this set
+// itemNames: Set<string> — collect rows whose name (lowercase) is in this set
+//            Used to resolve crafted items by recipe name when the Blizzard API
+//            does not return crafted_item (common in alpha/beta data).
+async function streamItemSparse(itemIds, itemNames) {
   var url = WAGO_BASE + 'ItemSparse/csv';
-  console.log('[WagoService] Streaming ItemSparse for ' + (itemIds ? itemIds.size : 'all') + ' item IDs…');
+  var idCount   = itemIds   ? itemIds.size   : 0;
+  var nameCount = itemNames ? itemNames.size : 0;
+  console.log('[WagoService] Streaming ItemSparse for ' + idCount + ' IDs + ' + nameCount + ' names…');
 
   for (;;) {
     try {
@@ -133,13 +139,17 @@ async function streamItemSparse(itemIds) {
             var vals = splitCSVLine(line);
             var id   = parseInt(vals[headers.indexOf('ID')] || 0);
             if (!id) continue;
-            if (itemIds && itemIds.size && !itemIds.has(id)) continue;
 
             var row = {};
             headers.forEach(function(h, j) { row[h] = vals[j] || ''; });
+            var name = row.Display_lang || row.Display || row.Name_lang || row.Name || '';
+
+            var matchById   = itemIds   && itemIds.size   && itemIds.has(id);
+            var matchByName = itemNames && itemNames.size && itemNames.has(name.toLowerCase());
+            if (!matchById && !matchByName) continue;
 
             result.set(id, {
-              name:       row.Display_lang || row.Display || row.Name_lang || row.Name || '',
+              name:       name,
               itemLevel:  parseInt(row.ItemLevel || row.iLvl || 0),
               quality:    parseInt(row.OverallQualityID || row.Quality || 0),
               classId:    parseInt(row.ClassID || row.Class || 0) || null,
@@ -168,4 +178,69 @@ async function streamItemSparse(itemIds) {
   }
 }
 
-module.exports = { fetchSpellReagents, streamItemSparse };
+// ── CraftingData ───────────────────────────────────────────────────
+// Returns Map<spellId, { itemId, quantityMin, quantityMax }>
+// Used as the authoritative SpellID → CraftedItemID source for processing
+// recipes (Prospecting, Milling, Crushing) where the Blizzard API often
+// omits crafted_item in alpha/beta builds.
+// Column name fallbacks: SpellID | Spell_ID, CraftedItemID | ItemID,
+//   CraftedQuantityMin | QuantityMin, CraftedQuantityMax | QuantityMax
+async function fetchCraftingData() {
+  var rows = await fetchDB2('CraftingData');
+
+  var bySpell = new Map();
+  rows.forEach(function(row) {
+    var spellId  = parseInt(row.SpellID  || row.Spell_ID  || 0);
+    var itemId   = parseInt(row.CraftedItemID || row.ItemID || 0);
+    if (!spellId || !itemId) return;
+
+    var qMin = parseFloat(row.CraftedQuantityMin || row.QuantityMin || 1) || 1;
+    var qMax = parseFloat(row.CraftedQuantityMax || row.QuantityMax || qMin) || qMin;
+    var qty  = (qMin + qMax) / 2;
+
+    // Only keep the entry if it maps to a real item (itemId > 0)
+    if (!bySpell.has(spellId)) {
+      bySpell.set(spellId, { itemId: itemId, quantity: qty });
+    }
+  });
+
+  console.log('[WagoService] CraftingData: ' + bySpell.size + ' spell → item mappings.');
+  return bySpell;
+}
+
+// ── ModifiedCraftingQuantities ─────────────────────────────────────
+// Returns Map<recipe_name_lower, Map<slotTypeId, quantity>>
+// Combines SpellName (name → internal spell ID) with ModifiedCraftingSpellSlot
+// (internal spell ID → slot_type_id → ReagentCount) so recipes can look up
+// the correct quantity for each optional reagent slot by recipe name.
+async function fetchModifiedCraftingQuantities() {
+  var nameRows = await fetchDB2('SpellName');
+  var nameToSpellId = new Map();
+  nameRows.forEach(function(row) {
+    var id   = parseInt(row.ID || 0);
+    var name = (row.Name_lang || '').toLowerCase();
+    if (id && name) nameToSpellId.set(name, id);
+  });
+
+  var slotRows = await fetchDB2('ModifiedCraftingSpellSlot');
+  var spellSlotMap = new Map(); // internalSpellId → Map<slotTypeId, quantity>
+  slotRows.forEach(function(row) {
+    var spellId    = parseInt(row.SpellID || 0);
+    var slotTypeId = parseInt(row.ModifiedCraftingReagentSlotID || 0);
+    var quantity   = parseInt(row.ReagentCount || 1) || 1;
+    if (!spellId || !slotTypeId) return;
+    if (!spellSlotMap.has(spellId)) spellSlotMap.set(spellId, new Map());
+    spellSlotMap.get(spellId).set(slotTypeId, quantity);
+  });
+
+  var result = new Map(); // name_lower → Map<slotTypeId, quantity>
+  nameToSpellId.forEach(function(spellId, name) {
+    var slots = spellSlotMap.get(spellId);
+    if (slots) result.set(name, slots);
+  });
+
+  console.log('[WagoService] ModifiedCraftingQuantities: ' + result.size + ' recipes with slot data.');
+  return result;
+}
+
+module.exports = { fetchSpellReagents, streamItemSparse, fetchCraftingData, fetchModifiedCraftingQuantities };

@@ -44,7 +44,7 @@
     <!-- ── Tabs ── -->
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="commodities">Crafting</button>
-      <button class="tab-btn" data-tab="realms">Flipping</button>
+      <button class="tab-btn" data-tab="realms">Realm Sniping</button>
     </div>
 
     <!-- ── Tab: Commodities ── -->
@@ -64,6 +64,17 @@
         </div>
         <div id="charStatus" class="char-status"></div>
         <div id="charProfessions" class="char-professions"></div>
+        <details class="craftsim-section" id="craftSimSection">
+          <summary class="craftsim-summary">⚗ CraftSim / ForgeFinder <span id="craftSimCount" class="craftsim-count"></span></summary>
+          <div class="craftsim-body">
+            <textarea id="craftSimJson" class="craftsim-textarea" placeholder="Paste CraftSim ForgeFinder JSON here…" rows="3" spellcheck="false"></textarea>
+            <div class="craftsim-actions">
+              <button class="btn btn-sm" onclick="doCraftSimImport()">Import</button>
+              <button class="craftsim-clear-btn" onclick="clearCraftSimStats()">Clear all</button>
+              <span id="craftSimStatus" class="craftsim-status"></span>
+            </div>
+          </div>
+        </details>
         <div id="charCraftingStats" class="char-crafting-stats hidden">
           <div class="cstat-title">Crafting Stats <span class="cstat-hint">Prefilled from equipped gear — you can adjust</span></div>
           <div class="cstat-grid">
@@ -111,20 +122,30 @@
       <div id="craftingGroups"></div>
     </div>
 
-    <!-- ── Tab: Flipping ── -->
+    <!-- ── Tab: Realm Sniping ── -->
     <div id="tab-realms" class="tab-pane hidden">
-      <div class="flip-category-bar">
-        <button class="flip-cat-btn active" data-category="all">All</button>
-        <button class="flip-cat-btn" data-category="gear">Gear</button>
-        <button class="flip-cat-btn" data-category="consumable">Consumables</button>
-        <button class="flip-cat-btn" data-category="material">Materials</button>
-        <button class="flip-cat-btn" data-category="recipe">Recipes</button>
-        <button class="flip-cat-btn" data-category="pet">Battle Pets</button>
-        <button class="flip-cat-btn" data-category="container">Bags</button>
-        <button class="flip-cat-btn" data-category="misc">Misc</button>
+      <div class="flip-category-bar" id="snipeCategoryBar">
+        <button class="flip-cat-btn active" data-snipe-category="all">All</button>
+        <button class="flip-cat-btn" data-snipe-category="gear">Gear</button>
+        <button class="flip-cat-btn" data-snipe-category="consumable">Consumables</button>
+        <button class="flip-cat-btn" data-snipe-category="material">Materials</button>
+        <button class="flip-cat-btn" data-snipe-category="recipe">Recipes</button>
+        <button class="flip-cat-btn" data-snipe-category="pet">Battle Pets</button>
+        <button class="flip-cat-btn" data-snipe-category="container">Bags</button>
+        <button class="flip-cat-btn" data-snipe-category="gem">Gems</button>
+        <button class="flip-cat-btn" data-snipe-category="glyph">Glyphs</button>
+        <button class="flip-cat-btn" data-snipe-category="profession_equip">Profession Equip</button>
+        <button class="flip-cat-btn" data-snipe-category="misc">Misc</button>
       </div>
-      <p id="flipEmptyMsg" class="muted hidden"></p>
-      <div id="flipTable"></div>
+      <div id="snipeProfessionFilter" class="prof-filter"></div>
+      <div class="tab-toolbar">
+        <div class="crafting-search-wrap">
+          <input id="snipeSearch" class="crafting-search" type="text" placeholder="Search items…" oninput="onSnipeSearch(this.value)" autocomplete="off">
+          <button id="snipeSearchClear" class="crafting-search-clear hidden" onclick="clearSnipeSearch()" title="Clear search">✕</button>
+        </div>
+      </div>
+      <p id="snipeEmptyMsg" class="muted hidden">Loading…</p>
+      <div id="snipeTable"></div>
     </div>
 
   <!-- ── Chart modal ── -->
@@ -172,7 +193,7 @@
         btn.classList.add('active');
         activeTab = btn.dataset.tab;
         document.getElementById('tab-' + activeTab).classList.remove('hidden');
-        if (activeTab === 'realms' && !flipLoaded) loadFlipping();
+        if (activeTab === 'realms' && !snipeLoaded) loadRealmSniping();
       });
     });
 
@@ -182,10 +203,11 @@
 
     regionSelect.addEventListener('change', function() {
       localStorage.setItem('wowah_region', regionSelect.value);
-      flipLoaded = false;
+      snipeLoaded = false;
+      cachedSnipeData = null;
       loadStatus();
       loadCrafting();
-      if (activeTab === 'realms') loadFlipping();
+      if (activeTab === 'realms') loadRealmSniping();
     });
 
     function getRegion() { return regionSelect.value; }
@@ -200,22 +222,34 @@
       updateCharSkillBar();
     });
 
-    // ── Flipping category filter ──────────────────────────────
-    var activeFlipCategory = localStorage.getItem('wowah_flip_category') || 'all';
-    var flipLoaded = false;
+    // ── Realm Sniping filters ─────────────────────────────────
+    var snipeLoaded          = false;
+    var activeSnipeCategory  = localStorage.getItem('wowah_snipe_category')  || 'all';
+    var activeSnipeProfession = localStorage.getItem('wowah_snipe_prof') || 'all';
 
-    document.querySelectorAll('.flip-cat-btn').forEach(function(btn) {
-      if (btn.dataset.category === activeFlipCategory) {
-        document.querySelectorAll('.flip-cat-btn').forEach(function(b) { b.classList.remove('active'); });
-        btn.classList.add('active');
-      }
+    // item_class → category key map (mirrors server-side CATEGORY_CLASS_MAP + extras)
+    var SNIPE_CATEGORY_CLASS_MAP = {
+      gear:             [2, 4],
+      consumable:       [0],
+      material:         [7],
+      recipe:           [9],
+      pet:              [17],
+      container:        [1],
+      gem:              [3],
+      glyph:            [15],
+      profession_equip: [19],
+      misc:             [14],
+    };
+
+    // Restore active category button on load
+    document.querySelectorAll('#snipeCategoryBar .flip-cat-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.snipeCategory === activeSnipeCategory);
       btn.addEventListener('click', function() {
-        document.querySelectorAll('.flip-cat-btn').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelectorAll('#snipeCategoryBar .flip-cat-btn').forEach(function(b) { b.classList.remove('active'); });
         btn.classList.add('active');
-        activeFlipCategory = btn.dataset.category;
-        localStorage.setItem('wowah_flip_category', activeFlipCategory);
-        flipLoaded = false;
-        loadFlipping();
+        activeSnipeCategory = btn.dataset.snipeCategory;
+        localStorage.setItem('wowah_snipe_category', activeSnipeCategory);
+        reRenderSnipe();
       });
     });
 
@@ -255,36 +289,102 @@
     }
     loadStatus();
 
-    // ── Flipping data ─────────────────────────────────────────
-    function loadFlipping() {
-      flipLoaded = true;
-      var emptyEl = document.getElementById('flipEmptyMsg');
-      var tableEl = document.getElementById('flipTable');
+    // ── Realm Sniping ─────────────────────────────────────────
+    var snipeSearchTerm  = '';
+    var cachedSnipeData  = null;
+
+    function loadRealmSniping() {
+      snipeLoaded = true;
+      var emptyEl = document.getElementById('snipeEmptyMsg');
+      var tableEl = document.getElementById('snipeTable');
       emptyEl.textContent = 'Loading…';
       emptyEl.classList.remove('hidden');
       tableEl.innerHTML = '';
 
-      fetch('/api/flipping?region=' + getRegion() + '&category=' + activeFlipCategory)
+      fetch('/api/recipes/realm-sniping?region=' + getRegion())
         .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
         .then(function(result) {
           if (!result.ok) {
-            emptyEl.textContent = result.data.error || 'Failed to load flipping data.';
+            emptyEl.textContent = result.data.error || 'Failed to load data.';
             return;
           }
-          renderFlipping(result.data);
+          cachedSnipeData = result.data;
+          renderSnipeProfessionFilter(result.data);
+          reRenderSnipe();
         })
         .catch(function() {
-          emptyEl.textContent = 'Could not load flipping data.';
+          emptyEl.textContent = 'Could not load realm sniping data.';
           emptyEl.classList.remove('hidden');
         });
     }
 
-    function renderFlipping(items) {
-      var emptyEl = document.getElementById('flipEmptyMsg');
-      var tableEl = document.getElementById('flipTable');
+    function reRenderSnipe() {
+      if (!cachedSnipeData) return;
+      var data = cachedSnipeData;
+
+      // Category filter
+      if (activeSnipeCategory !== 'all') {
+        var classes = SNIPE_CATEGORY_CLASS_MAP[activeSnipeCategory] || [];
+        data = data.filter(function(item) { return classes.indexOf(item.item_class) !== -1; });
+      }
+
+      // Profession filter
+      if (activeSnipeProfession !== 'all') {
+        data = data.filter(function(item) { return item.profession === activeSnipeProfession; });
+      }
+
+      // Search filter
+      if (snipeSearchTerm) {
+        var q = snipeSearchTerm.toLowerCase();
+        data = data.filter(function(item) {
+          return item.item_name && item.item_name.toLowerCase().indexOf(q) !== -1;
+        });
+      }
+      renderRealmSniping(data);
+    }
+
+    function renderSnipeProfessionFilter(data) {
+      var profSet = {};
+      data.forEach(function(item) { if (item.profession) profSet[item.profession] = true; });
+      var profs = Object.keys(profSet).sort();
+
+      var filterEl = document.getElementById('snipeProfessionFilter');
+      filterEl.innerHTML =
+        '<button class="prof-btn' + (activeSnipeProfession === 'all' ? ' active' : '') + '" data-snipe-prof="all">All Professions</button>' +
+        profs.map(function(p) {
+          return '<button class="prof-btn' + (activeSnipeProfession === p ? ' active' : '') + '" data-snipe-prof="' + escHtml(p) + '">' + escHtml(p) + '</button>';
+        }).join('');
+
+      filterEl.querySelectorAll('.prof-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          filterEl.querySelectorAll('.prof-btn').forEach(function(b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          activeSnipeProfession = btn.dataset.snipeProf;
+          localStorage.setItem('wowah_snipe_prof', activeSnipeProfession);
+          reRenderSnipe();
+        });
+      });
+    }
+
+    function onSnipeSearch(val) {
+      snipeSearchTerm = val.trim();
+      document.getElementById('snipeSearchClear').classList.toggle('hidden', !snipeSearchTerm);
+      reRenderSnipe();
+    }
+
+    function clearSnipeSearch() {
+      snipeSearchTerm = '';
+      document.getElementById('snipeSearch').value = '';
+      document.getElementById('snipeSearchClear').classList.add('hidden');
+      reRenderSnipe();
+    }
+
+    function renderRealmSniping(items) {
+      var emptyEl = document.getElementById('snipeEmptyMsg');
+      var tableEl = document.getElementById('snipeTable');
 
       if (!items.length) {
-        emptyEl.textContent = 'No flipping opportunities found for this category.';
+        emptyEl.textContent = 'No craftable realm items found.';
         emptyEl.classList.remove('hidden');
         tableEl.innerHTML = '';
         return;
@@ -295,31 +395,42 @@
         var iconHtml = item.icon
           ? '<img src="' + escHtml(item.icon) + '" alt="" class="item-icon" onerror="this.style.display=\'none\'">'
           : '<span class="item-icon-placeholder"></span>';
+        var name = escHtml(item.item_name || ('Item #' + item.item_id));
+        var ilvl = item.item_level > 0 ? ' <span class="flip-ilvl" style="display:inline">ilvl ' + item.item_level + '</span>' : '';
 
-        var name = escHtml(item.name || ('Item #' + item.item_id));
-        var qualityLabel = item.quality > 0 ? ' <span class="flip-quality">R' + item.quality + '</span>' : '';
-        var ilvlLabel    = item.item_level > 0 ? '<div class="flip-ilvl">ilvl ' + item.item_level + '</div>' : '';
+        var profBadge = item.profession
+          ? '<span class="snipe-prof-badge">' + escHtml(item.profession) + '</span>'
+          : '';
 
-        function realmEntry(r, isBuy) {
-          var priceClass = isBuy ? 'flip-buy-price' : 'flip-sell-price';
-          return '<div class="flip-realm-entry">' +
-            '<span class="flip-realm-name" title="' + escHtml(r.realm_names) + '">' + escHtml(r.realm_names) + '</span>' +
-            '<span class="' + priceClass + '">' + formatGoldShort(r.unit_price) + '</span>' +
-            '</div>';
-        }
+        var costCell = item.reagent_cost
+          ? '<td class="price">' + formatGold(item.reagent_cost) + '</td>'
+          : '<td class="price muted">—</td>';
 
-        var buyHtml  = item.buy_realms.map(function(r)  { return realmEntry(r, true);  }).join('');
-        var sellHtml = item.sell_realms.map(function(r) { return realmEntry(r, false); }).join('');
+        var profitCell = (item.reagent_cost && item.best_price)
+          ? (function() {
+              var profit = item.best_price * item.crafted_quantity - item.reagent_cost;
+              var cls = profit > 0 ? 'profit-positive' : 'profit-negative';
+              return '<td class="price ' + cls + '">' + formatGold(profit) + '</td>';
+            })()
+          : '<td class="price muted">—</td>';
+
+        var realmHtml = (item.sell_realms || []).map(function(r, idx) {
+          var nameShort = r.realm_names.split(' / ')[0]; // use first realm name if connected group
+          return '<div class="snipe-realm-entry' + (idx === 0 ? ' snipe-realm-best' : '') + '">' +
+            '<span class="snipe-realm-name" title="' + escHtml(r.realm_names) + '">' + escHtml(nameShort) + '</span>' +
+            '<span class="snipe-realm-price">' + formatGoldShort(r.unit_price) + '</span>' +
+          '</div>';
+        }).join('');
 
         return '<tr>' +
           '<td>' + iconHtml + '</td>' +
           '<td>' +
             '<a href="https://www.wowhead.com/item=' + item.item_id + '" target="_blank" rel="noopener">' + name + '</a>' +
-            qualityLabel + ilvlLabel +
+            ilvl + ' ' + profBadge +
           '</td>' +
-          '<td><div class="flip-realm-list">' + buyHtml  + '</div></td>' +
-          '<td><div class="flip-realm-list">' + sellHtml + '</div></td>' +
-          '<td class="flip-spread">' + formatGoldShort(item.spread) + '</td>' +
+          costCell +
+          profitCell +
+          '<td><div class="snipe-realm-list">' + realmHtml + '</div></td>' +
         '</tr>';
       }).join('');
 
@@ -328,13 +439,20 @@
           '<thead><tr>' +
             '<th style="width:44px"></th>' +
             '<th>Item</th>' +
-            '<th>Buy From <span class="hint">(cheapest realms)</span></th>' +
-            '<th>Sell On <span class="hint">(most expensive realms)</span></th>' +
-            '<th>Spread</th>' +
+            '<th>Craft Cost</th>' +
+            '<th>Best Profit</th>' +
+            '<th>Top Sell Realms</th>' +
           '</tr></thead>' +
           '<tbody>' + rows + '</tbody>' +
         '</table>';
     }
+
+    // ── CraftSim / ForgeFinder per-recipe stats ───────────────
+    var craftSimStats = {};
+    (function() {
+      try { var s = localStorage.getItem('wowah_craftsim'); if (s) craftSimStats = JSON.parse(s); } catch (e) {}
+      updateCraftSimCount();
+    })();
 
     // ── Commodities crafting ──────────────────────────────────
     var cachedCraftingData      = null;
@@ -368,7 +486,7 @@
 
     function reRenderCrafting() {
       if (!cachedCraftingData) return;
-      var data = cachedCraftingData;
+      var data = cachedCraftingData.filter(function(item) { return !item.is_realm_item; });
       if (craftingSearchTerm) {
         var q = craftingSearchTerm.toLowerCase();
         data = data.filter(function(item) {
@@ -392,6 +510,120 @@
       reRenderCrafting();
     }
 
+    function updateCraftSimCount() {
+      var count = Object.keys(craftSimStats).length;
+      var el = document.getElementById('craftSimCount');
+      if (el) el.textContent = count ? '(' + count + ' recipes)' : '';
+    }
+
+    function doCraftSimImport() {
+      var raw = document.getElementById('craftSimJson').value.trim();
+      var statusEl = document.getElementById('craftSimStatus');
+      function setStatus(msg, ok) {
+        statusEl.textContent = msg;
+        statusEl.className = 'craftsim-status' + (ok ? ' craftsim-status-ok' : ' craftsim-status-err');
+      }
+      if (!raw) return;
+      var entries;
+      try {
+        entries = JSON.parse(raw);
+        if (!Array.isArray(entries)) throw new Error('Expected a JSON array');
+      } catch (e) { setStatus('Invalid JSON: ' + e.message, false); return; }
+      if (!cachedCraftingData) { setStatus('Crafting data not loaded yet.', false); return; }
+
+      var itemToRecipe = {};
+      cachedCraftingData.forEach(function(item) { if (item.item_id) itemToRecipe[item.item_id] = item.recipe_id; });
+
+      var matched = 0, skipped = 0;
+      entries.forEach(function(entry) {
+        var recipeId = null;
+        var ids = entry.itemIDs || entry.itemIds || [];
+        for (var i = 0; i < ids.length; i++) { if (itemToRecipe[ids[i]]) { recipeId = itemToRecipe[ids[i]]; break; } }
+        if (!recipeId) { skipped++; return; }
+        craftSimStats[recipeId] = {
+          multicraft:      typeof entry.multicraft      === 'number' ? entry.multicraft      : 0,
+          resourcefulness: typeof entry.resourcefulness === 'number' ? entry.resourcefulness : 0,
+        };
+        matched++;
+      });
+
+      localStorage.setItem('wowah_craftsim', JSON.stringify(craftSimStats));
+      updateCraftSimCount();
+      setStatus('Imported ' + matched + ' recipes' + (skipped ? ', ' + skipped + ' not matched' : '') + '.', matched > 0);
+      if (matched > 0) reRenderCrafting();
+    }
+
+    function clearCraftSimStats() {
+      craftSimStats = {};
+      localStorage.removeItem('wowah_craftsim');
+      updateCraftSimCount();
+      document.getElementById('craftSimStatus').textContent = '';
+      reRenderCrafting();
+    }
+
+    function onRecipeStatInput(input) {
+      var statsRow = input.closest('tr.recipe-stats-row');
+      var recipeId = statsRow && statsRow.getAttribute('data-recipe');
+      if (!recipeId) return;
+      var mcInput  = statsRow.querySelector('.recipe-stat-mc');
+      var resInput = statsRow.querySelector('.recipe-stat-res');
+      var mc  = (parseFloat(mcInput.value)  || 0) / 100;
+      var res = (parseFloat(resInput.value) || 0) / 100;
+      craftSimStats[recipeId] = { multicraft: mc, resourcefulness: res };
+      localStorage.setItem('wowah_craftsim', JSON.stringify(craftSimStats));
+      updateCraftSimCount();
+      var craftingRow = document.querySelector('tr[data-recipe="' + recipeId + '"].crafting-row') ||
+                        document.querySelector('tr[data-recipe="' + recipeId + '"].crafting-row-realm');
+      if (craftingRow) updateRecipeRowProfits(craftingRow, mc, res);
+    }
+
+    function resetRecipeStats(btn) {
+      var statsRow = btn.closest('tr.recipe-stats-row');
+      var recipeId = statsRow && statsRow.getAttribute('data-recipe');
+      if (!recipeId) return;
+      delete craftSimStats[recipeId];
+      localStorage.setItem('wowah_craftsim', JSON.stringify(craftSimStats));
+      updateCraftSimCount();
+      var globalStats = (loadedCharacter && loadedCharacter.craftingStats) || {};
+      var mc  = (globalStats.multicraft_pct      || 0) / 100;
+      var res = (globalStats.resourcefulness_pct || 0) / 100;
+      statsRow.querySelector('.recipe-stat-mc').value  = (mc  * 100).toFixed(1);
+      statsRow.querySelector('.recipe-stat-res').value = (res * 100).toFixed(1);
+      statsRow.querySelector('.craftsim-badge') && statsRow.querySelector('.craftsim-badge').remove();
+      var craftingRow = document.querySelector('tr[data-recipe="' + recipeId + '"].crafting-row') ||
+                        document.querySelector('tr[data-recipe="' + recipeId + '"].crafting-row-realm');
+      if (craftingRow) updateRecipeRowProfits(craftingRow, mc, res);
+    }
+
+    function updateRecipeRowProfits(craftingRow, mc, res) {
+      var sellPrice  = parseFloat(craftingRow.getAttribute('data-sell-price'))   || 0;
+      var craftedQty = parseInt(craftingRow.getAttribute('data-crafted-qty'))    || 1;
+      var optCost    = parseFloat(craftingRow.getAttribute('data-optimal-cost')) || 0;
+      var lqSellAttr = craftingRow.getAttribute('data-lq-sell-price');
+      var lqSell     = lqSellAttr !== null ? parseFloat(lqSellAttr) : null;
+      var hqSellAttr = craftingRow.getAttribute('data-hq-sell');
+      var hqSell     = hqSellAttr !== null ? parseFloat(hqSellAttr) : null;
+      var hqCostAttr = craftingRow.getAttribute('data-hq-reagent-cost');
+      var hqCost     = hqCostAttr !== null ? parseFloat(hqCostAttr) : 0;
+      var globalStats = (loadedCharacter && loadedCharacter.craftingStats) || {};
+      var concCost    = (globalStats.conc_gold_per_charge || 0) * 10000;
+
+      var lqSellTotal = (lqSell !== null ? lqSell : sellPrice) * craftedQty;
+      var q1Profit    = (lqSellTotal * (1 + mc)) - (optCost  * (1 - res * 0.35));
+      var q5Profit    = hqSell !== null ? (hqSell * (1 + mc)) - (hqCost  * (1 - res * 0.35)) : null;
+      var concProfit  = hqSell !== null ? (hqSell * (1 + mc)) - (optCost * (1 - res * 0.35)) - concCost : null;
+      var bestVal     = Math.max(q1Profit, q5Profit !== null ? q5Profit : -Infinity, concProfit !== null ? concProfit : -Infinity);
+
+      function updateCell(td, profit, avail, isBest) {
+        if (!td) return;
+        if (!avail) { td.innerHTML = '—'; td.className = 'price'; return; }
+        td.className = 'price ' + (profit > 0 ? 'profit-positive' : 'profit-negative') + (isBest ? ' profit-best' : '');
+        td.innerHTML = formatGold(profit);
+      }
+      updateCell(craftingRow.querySelector('td[data-p="q1"]'),   q1Profit,   true,              q1Profit   === bestVal);
+      updateCell(craftingRow.querySelector('td[data-p="q5"]'),   q5Profit,   q5Profit   !== null, q5Profit   === bestVal);
+      updateCell(craftingRow.querySelector('td[data-p="conc"]'), concProfit, concProfit !== null, concProfit === bestVal);
+    }
 
     // ── Shared render logic ───────────────────────────────────
     var EXPANSION_ORDER = [
@@ -431,21 +663,15 @@
         return '<button class="prof-btn" onclick="document.getElementById(\'' + id + '\').scrollIntoView({behavior:\'smooth\',block:\'start\'});document.getElementById(\'' + id + '\').querySelector(\'details\').open=true">' + escHtml(prof) + '</button>';
       }).join('');
 
-      var hasStats   = loadedCharacter && loadedCharacter.craftingStats &&
-        (loadedCharacter.craftingStats.multicraft_pct > 0 || loadedCharacter.craftingStats.resourcefulness_pct > 0 || loadedCharacter.craftingStats.conc_gold_per_charge > 0);
-      currentTableHasSubCraft = items.some(function(it) { return it.has_sub_crafts; });
-      var hasSubCraft = currentTableHasSubCraft;
+      currentTableHasSubCraft = false;
       var THEAD = '<thead><tr>' +
         '<th style="width:44px"></th>' +
         '<th>Crafted Item</th>' +
-        '<th>Sell Price <span class="hint">(×qty)</span></th>' +
-        '<th>Direct Cost</th>' +
-        '<th>Optimal Cost <span class="hint">(cheapest quality)</span></th>' +
-        '<th>Profit</th>' +
-        (hasSubCraft ? '<th>Sub-craft Profit <span class="hint">craft your mats</span></th>' : '') +
-        (hasStats    ? '<th>Adj. Profit <span class="hint">with your stats</span></th>' : '') +
-        '<th>Trend</th>' +
-        '<th style="width:32px"></th>' +
+        '<th>Sell Price</th>' +
+        '<th>Q1 Profit <span class="hint">cheap mats → Q1 output</span></th>' +
+        '<th>Q5 Profit <span class="hint">premium mats → Q5 output</span></th>' +
+        '<th>Conc. Profit <span class="hint" title="Cheap mats + concentration → Q5 output. Set Ingenuity gold/charge in character stats for accurate value.">cheap mats + 🔮 → Q5 output</span></th>' +
+        '<th style="width:100px"></th>' +
         '</tr></thead>';
 
       groupsEl.innerHTML = professions.map(function(prof) {
@@ -458,7 +684,11 @@
           .concat(Object.keys(profData).filter(function(e) { return EXPANSION_ORDER.indexOf(e) < 0; }))
           .filter(function(exp) { return profData[exp] && profData[exp].length > 0 && exp !== 'Unknown'; })
           .map(function(exp) {
-            var expItems = profData[exp].slice().sort(function(a, b) { return b.optimal_profit - a.optimal_profit; });
+            var expItems = profData[exp].slice().sort(function(a, b) {
+              var aMax = Math.max(a.lq_profit, a.hq_profit != null ? a.hq_profit : -Infinity);
+              var bMax = Math.max(b.lq_profit, b.hq_profit != null ? b.hq_profit : -Infinity);
+              return bMax - aMax;
+            });
             var rows = expItems.map(function(item) { return buildCraftingRow(item); }).join('');
             return '<div class="expansion-group" data-expansion="' + escHtml(exp) + '">' +
               '<details open>' +
@@ -485,12 +715,34 @@
         ? '<img src="' + item.item_icon + '" alt="" class="item-icon" onerror="this.style.display=\'none\'">'
         : '<span class="item-icon-placeholder"></span>';
       var name        = item.item_name || ('Item #' + item.item_id);
-      var sellTotal   = item.sell_price * item.crafted_quantity;
-      var profitClass = (item.optimal_profit > 0 || item.direct_profit > 0) ? 'profit-positive' : 'profit-negative';
 
-      // Determine column count for reagent row colspan (base 8 + optional sub-craft col + optional adj col)
       var stats      = loadedCharacter && loadedCharacter.craftingStats;
-      var hasStats   = stats && (stats.multicraft_pct > 0 || stats.resourcefulness_pct > 0 || stats.conc_gold_per_charge > 0);
+      var perRecipe  = craftSimStats[item.recipe_id];
+      var mc         = perRecipe ? perRecipe.multicraft      : (stats ? (stats.multicraft_pct      || 0) / 100 : 0);
+      var res        = perRecipe ? perRecipe.resourcefulness : (stats ? (stats.resourcefulness_pct || 0) / 100 : 0);
+      var concCost   = stats ? (stats.conc_gold_per_charge || 0) * 10000 : 0;
+
+      var lqSellTotal = (item.lq_sell_price != null ? item.lq_sell_price : item.sell_price) * item.crafted_quantity;
+      var q1Profit    = (lqSellTotal * (1 + mc)) - (item.optimal_cost * (1 - res * 0.35));
+      var q5Profit    = item.hq_sell != null
+        ? (item.hq_sell * (1 + mc)) - (item.hq_reagent_cost * (1 - res * 0.35))
+        : null;
+      var concProfit  = item.hq_sell != null
+        ? (item.hq_sell * (1 + mc)) - (item.optimal_cost * (1 - res * 0.35)) - concCost
+        : null;
+
+      var bestVal = Math.max(q1Profit, q5Profit != null ? q5Profit : -Infinity, concProfit != null ? concProfit : -Infinity);
+
+      function scenarioCell(profit, avail, isBest, note, dataP) {
+        var dp = dataP ? ' data-p="' + dataP + '"' : '';
+        if (!avail) return '<td class="price"' + dp + '>—</td>';
+        var cls = 'price ' + (profit > 0 ? 'profit-positive' : 'profit-negative') + (isBest ? ' profit-best' : '');
+        return '<td class="' + cls + '"' + dp + '>' + formatGold(profit) + (note ? '<span class="adj-delta">' + note + '</span>' : '') + '</td>';
+      }
+      var concNote = (item.hq_sell != null && !concCost) ? '−conc. cost' : null;
+      var q1Cell   = scenarioCell(q1Profit,   true,              q1Profit === bestVal,   null,     'q1');
+      var q5Cell   = scenarioCell(q5Profit,   q5Profit != null,  q5Profit === bestVal,   null,     'q5');
+      var concCell = scenarioCell(concProfit, concProfit != null, concProfit === bestVal, concNote, 'conc');
 
       var reagentRows = item.reagents.map(function(rg) {
         var rgName      = rg.name || ('Item #' + rg.item_id);
@@ -520,22 +772,26 @@
           '</span>';
         }
 
+        var hqRgPrice = rg.variants && rg.variants.length
+          ? rg.variants[rg.variants.length - 1].unit_price
+          : (rg.unit_price || 0);
+
         var variantHtml = '';
         if (hasVariants) {
+          var TIER_STARS = ['', '★', '★★', '★★★', '★★★★', '★★★★★'];
           variantHtml = rg.variants.map(function(v) {
             var vName      = v.name || ('Item #' + v.item_id);
             var isCheapest = v.unit_price === rg.best_price;
+            var qLabel     = v.quality > 0 ? '<span class="qtier-label" title="Q' + v.quality + '">' + (TIER_STARS[v.quality] || 'Q' + v.quality) + '</span> ' : '';
             return '<tr class="variant-row hidden">' +
               '<td></td>' +
               '<td class="reagent-name" style="padding-left:52px">' +
-                (isCheapest ? '★ ' : '  ') +
+                (isCheapest ? '★ ' : '  ') + qLabel +
                 '<a href="https://www.wowhead.com/item=' + v.item_id + '" target="_blank" rel="noopener">' + escHtml(vName) + '</a>' +
               '</td>' +
-              '<td></td><td></td>' +
-              '<td class="price' + (isCheapest ? ' best-price' : '') + '">' + formatGold(v.unit_price * rg.quantity) + '</td>' +
               '<td></td>' +
-              (currentTableHasSubCraft ? '<td></td>' : '') +
-              (hasStats ? '<td></td>' : '') +
+              '<td></td>' +
+              '<td class="price' + (isCheapest ? ' best-price' : '') + '">' + formatGold(v.unit_price * rg.quantity) + '</td>' +
               '<td><span class="trend-badge" data-item="' + v.item_id + '">…</span></td>' +
               '<td></td></tr>';
           }).join('');
@@ -551,96 +807,66 @@
             (hasVariants  ? ' <button class="btn-toggle btn-tiny" onclick="toggleVariants(this)">+</button>' : '') +
           '</td>' +
           '<td></td>' +
-          '<td class="price">' + formatGold(rg.unit_price * rg.quantity) + '</td>' +
           '<td class="price best-price">' + formatGold(rg.best_price * rg.quantity) + '</td>' +
-          '<td></td>' +
-          (currentTableHasSubCraft ? '<td></td>' : '') +
-          (hasStats ? '<td></td>' : '') +
+          '<td class="price">' + formatGold(hqRgPrice * rg.quantity) + '</td>' +
           '<td><span class="trend-badge" data-item="' + rg.item_id + '">…</span></td>' +
           '<td></td></tr>' + subCraftTreeHtml + variantHtml;
       }).join('');
 
-      // Sell price cell: commodity items show one price; realm items show top-3 sell realms
-      var sellPriceCell;
-      if (item.is_realm_item && item.sell_realms && item.sell_realms.length) {
-        sellPriceCell =
-          '<td class="price crafting-realm-sell-cell">' +
-            '<div class="flip-realm-list">' +
-              item.sell_realms.map(function(r) {
-                return '<div class="flip-realm-entry">' +
-                  '<span class="flip-realm-name" title="' + escHtml(r.realm_names) + '">' + escHtml(r.realm_names) + '</span>' +
-                  '<span class="flip-sell-price">' + formatGoldShort(r.unit_price * item.crafted_quantity) + '</span>' +
-                '</div>';
-              }).join('') +
-            '</div>' +
-          '</td>';
-      } else {
-        sellPriceCell = '<td class="price">' + formatGold(sellTotal) + '</td>';
-      }
 
-      // ── Sub-craft profit ──────────────────────────────────────
-      var subCraftProfitCell = '';
-      if (item.has_sub_crafts) {
-        var sc_stats  = loadedCharacter && loadedCharacter.craftingStats;
-        var sc_mc     = sc_stats ? (sc_stats.multicraft_pct      || 0) / 100 : 0;
-        var sc_res    = sc_stats ? (sc_stats.resourcefulness_pct || 0) / 100 : 0;
-        var sc_conc   = sc_stats ? (sc_stats.conc_gold_per_charge || 0) * 10000 : 0;
-
-        // Compute deep cost: for each reagent use min(buy, craft_adj)
-        var deepCostAdj = item.reagents.reduce(function(s, rg) {
-          var buy = rg.best_price;
-          if (rg.sub_craft && rg.sub_craft.cost_per_unit > 0) {
-            var craftAdj = rg.sub_craft.cost_per_unit * (1 - sc_res * 0.35) / (sc_mc > 0 ? 1 + sc_mc : 1);
-            buy = Math.min(buy, craftAdj);
-          }
-          return s + rg.quantity * buy;
-        }, 0);
-
-        var deepSellAdj = sellTotal * (1 + sc_mc);
-        var deepProfitAdj = deepSellAdj - deepCostAdj - sc_conc;
-        var deepClass = deepProfitAdj > 0 ? 'profit-positive' : 'profit-negative';
-        var deepDelta = deepProfitAdj - item.optimal_profit;
-        var deepTip   = 'Craft your mats' + (sc_stats ? ' + your crafting stats' : '');
-        subCraftProfitCell =
-          '<td class="price sub-craft-profit ' + deepClass + '" title="' + deepTip + '">' +
-            formatGold(deepProfitAdj) +
-            '<span class="adj-delta">' + (deepDelta >= 0 ? '+' : '') + formatGoldShort(deepDelta) + ' vs buying</span>' +
-          '</td>';
-      }
-
-      // ── Adjusted profit ────────────────────────────────────────
-      var adjProfitCell = '';
-      var stats = loadedCharacter && loadedCharacter.craftingStats;
-      if (stats && (stats.multicraft_pct > 0 || stats.resourcefulness_pct > 0 || stats.conc_gold_per_charge > 0)) {
-        var mc       = (stats.multicraft_pct      || 0) / 100;
-        var res      = (stats.resourcefulness_pct || 0) / 100;
-        var concCost = (stats.conc_gold_per_charge || 0) * 10000; // gold → copper
-
-        // Multicraft: expected extra yield per craft
-        var adjSell = item.sell_price * item.crafted_quantity * (1 + mc);
-        // Resourcefulness: average ~35% of one reagent saved per proc
-        var adjCost = item.optimal_cost * (1 - res * 0.35);
-        var adjProfit = adjSell - adjCost - concCost;
-        var adjClass  = adjProfit > 0 ? 'profit-positive' : 'profit-negative';
-
-        // Build tooltip showing the breakdown
-        var mcStr   = mc  > 0  ? '+' + (mc  * 100).toFixed(1) + '% multicraft'       : '';
-        var resStr  = res > 0  ? '+' + (res * 100).toFixed(1) + '% resourcefulness'  : '';
-        var concStr = concCost > 0 ? '−' + formatGoldShort(concCost) + '/craft ingenuity' : '';
-        var tip = [mcStr, resStr, concStr].filter(Boolean).join(' · ');
-
-        adjProfitCell = '<td class="price adj-profit ' + adjClass + '" title="' + tip + '">' +
-          formatGold(adjProfit) +
-          '<span class="adj-delta">' + (adjProfit >= item.optimal_profit ? '+' : '') +
-          formatGoldShort(adjProfit - item.optimal_profit) + '</span>' +
-        '</td>';
+      // ── Quality tier rows ──────────────────────────────────────
+      var qualityTierRows = '';
+      var hasQualityTiers = item.quality_tiers && item.quality_tiers.length > 0;
+      var TIER_STARS = ['', '★', '★★', '★★★', '★★★★', '★★★★★'];
+      if (hasQualityTiers) {
+        qualityTierRows = item.quality_tiers.map(function(qt) {
+          var tierSell     = qt.min_price * item.crafted_quantity;
+          var tierQ1Profit = (tierSell * (1 + mc)) - (item.optimal_cost       * (1 - res * 0.35));
+          var tierQ5Profit = (tierSell * (1 + mc)) - (item.hq_reagent_cost    * (1 - res * 0.35));
+          var tierConc     = (tierSell * (1 + mc)) - (item.optimal_cost       * (1 - res * 0.35)) - concCost;
+          var stars        = TIER_STARS[qt.tier] || ('Q' + qt.tier);
+          var q1c  = tierQ1Profit > 0 ? 'profit-positive' : 'profit-negative';
+          var q5c  = tierQ5Profit > 0 ? 'profit-positive' : 'profit-negative';
+          var concc = tierConc > 0 ? 'profit-positive' : 'profit-negative';
+          return '<tr class="quality-tier-row hidden">' +
+            '<td></td>' +
+            '<td class="reagent-name" style="padding-left:24px">' +
+              '<span class="qtier-label" title="Quality tier ' + qt.tier + ' — ' + qt.listing_count + ' listings · sell: ' + formatGoldPlain(tierSell) + '">' + stars + '</span>' +
+            '</td>' +
+            '<td class="price">' + formatGold(tierSell) + '</td>' +
+            '<td class="price ' + q1c  + '">' + formatGold(tierQ1Profit) + '</td>' +
+            '<td class="price ' + q5c  + '">' + formatGold(tierQ5Profit) + '</td>' +
+            '<td class="price ' + concc + '">' + formatGold(tierConc) + '</td>' +
+            '<td></td>' +
+          '</tr>';
+        }).join('');
       }
 
       var rowClass = item.is_realm_item ? 'crafting-row crafting-row-realm' : 'crafting-row';
       var batchRow =
         '<tr class="batch-row hidden">' +
-          '<td colspan="20"><div class="batch-result"></div></td>' +
+          '<td colspan="7"><div class="batch-result"></div></td>' +
         '</tr>';
+      var displayMc  = (mc  * 100).toFixed(1);
+      var displayRes = (res * 100).toFixed(1);
+      var statsRowHtml =
+        '<tr class="recipe-stats-row hidden" data-recipe="' + item.recipe_id + '">' +
+          '<td colspan="7"><div class="recipe-stats-editor">' +
+            '<span class="recipe-stats-label">Per-recipe stats</span>' +
+            '<label class="recipe-stat-wrap">MC% <input type="number" class="recipe-stat-input recipe-stat-mc" min="0" max="100" step="0.1" value="' + displayMc + '" oninput="onRecipeStatInput(this)"></label>' +
+            '<label class="recipe-stat-wrap">Res% <input type="number" class="recipe-stat-input recipe-stat-res" min="0" max="100" step="0.1" value="' + displayRes + '" oninput="onRecipeStatInput(this)"></label>' +
+            (perRecipe ? '<span class="craftsim-badge">⚗ CraftSim</span>' : '') +
+            '<button class="recipe-stats-reset" onclick="resetRecipeStats(this)">↺ Reset to global</button>' +
+          '</div></td>' +
+        '</tr>';
+      var hqSellTotal = item.sell_price * item.crafted_quantity;
+      var sellCell = item.lq_sell_price != null
+        ? '<td class="price sell-price-cell">' +
+            '<span class="sell-tier-row"><span class="sell-tier-label">★★</span>' + formatGold(hqSellTotal) + '</span>' +
+            '<span class="sell-tier-row sell-lq-price"><span class="sell-tier-label">★</span>' + formatGold(item.lq_sell_price * item.crafted_quantity) + '</span>' +
+          '</td>'
+        : '<td class="price sell-price-cell">' + formatGold(hqSellTotal) + '</td>';
+
       return '<tr class="' + rowClass + '"' +
           ' data-item="' + item.item_id + '"' +
           ' data-recipe="' + item.recipe_id + '"' +
@@ -648,38 +874,36 @@
           ' data-crafted-qty="' + item.crafted_quantity + '"' +
           ' data-optimal-cost="' + item.optimal_cost + '"' +
           ' data-deep-cost="' + (item.deep_cost || item.optimal_cost) + '"' +
+          (item.hq_sell        != null ? ' data-hq-sell="'          + item.hq_sell          + '"' : '') +
+          (item.hq_reagent_cost != null ? ' data-hq-reagent-cost="' + item.hq_reagent_cost  + '"' : '') +
+          (item.lq_sell_price  != null ? ' data-lq-sell-price="'   + item.lq_sell_price    + '"' : '') +
           '>' +
         '<td>' + iconHtml + '</td>' +
         '<td><a href="https://www.wowhead.com/item=' + item.item_id + '" target="_blank" rel="noopener">' + escHtml(name) + '</a>' +
           '<span class="craft-qty"> ×' + item.crafted_quantity + '</span></td>' +
-        sellPriceCell +
-        '<td class="price">' + formatGold(item.direct_cost) + '</td>' +
-        '<td class="price best-price">' + formatGold(item.optimal_cost) + '</td>' +
-        '<td class="price ' + profitClass + '">' + formatGold(item.optimal_profit) + '</td>' +
-        subCraftProfitCell +
-        adjProfitCell +
-        '<td><span class="trend-badge" data-item="' + item.item_id + '">…</span>' +
-          '<button class="chart-btn" onclick="openChart(' + item.item_id + ', \'' + escHtml(name) + '\')" title="Price history">📈</button></td>' +
+        sellCell +
+        q1Cell +
+        q5Cell +
+        concCell +
         '<td class="craft-count-cell">' +
           '<input type="number" class="craft-count-input" min="1" value="1" title="Number of crafts" oninput="updateBatchRow(this)">' +
+          '<button class="chart-btn" onclick="openChart(' + item.item_id + ', \'' + escHtml(name) + '\')" title="Price history">📈</button>' +
+          (hasQualityTiers ? '<button class="btn-toggle btn-tiny qtier-toggle" onclick="toggleQualityTiers(this)" title="Show quality tiers">★</button>' : '') +
           '<button class="btn-toggle" onclick="toggleReagents(this)">+</button>' +
         '</td>' +
-        '</tr>' + batchRow + reagentRows;
+        '</tr>' + batchRow + qualityTierRows + reagentRows + statsRowHtml;
     }
 
     // Recursively renders the sub-craft tree for a reagent node.
     // depth=0 means direct children of a reagent-row.
     function renderSubCraftTree(node, depth) {
       if (!node.sub_reagents || !node.sub_reagents.length) return '';
-      var stats    = loadedCharacter && loadedCharacter.craftingStats;
-      var hasStats = stats && (stats.multicraft_pct > 0 || stats.resourcefulness_pct > 0 || stats.conc_gold_per_charge > 0);
-      var indent   = 52 + depth * 20; // px left-padding, increases with depth
+      var indent = 52 + depth * 20;
 
       return node.sub_reagents.map(function(sr) {
         var srName      = sr.name || ('Item #' + sr.item_id);
         var hasChildren = sr.is_craftable && sr.sub_reagents && sr.sub_reagents.length > 0;
 
-        // Craft-cheaper badge on sub-reagent rows
         var srBuyTotal   = (sr.market_price || 0) * sr.quantity;
         var srCraftTotal = sr.is_craftable ? (sr.resolved_cost || 0) * sr.quantity : srBuyTotal;
         var srNote = '';
@@ -697,11 +921,9 @@
             ' ×' + sr.quantity + srNote +
             (hasChildren ? ' <button class="btn-toggle btn-tiny" onclick="toggleSubReagents(this)" title="Show sub-materials">🔨</button>' : '') +
           '</td>' +
-          '<td></td><td></td>' +
+          '<td></td>' +
           '<td class="price">' + formatGold(srBuyTotal) + '</td>' +
           '<td></td>' +
-          (currentTableHasSubCraft ? '<td></td>' : '') +
-          (hasStats ? '<td></td>' : '') +
           '<td><span class="trend-badge" data-item="' + sr.item_id + '">…</span></td>' +
           '<td></td>' +
         '</tr>';
@@ -738,11 +960,26 @@
       }
     }
 
+    function toggleQualityTiers(btn) {
+      var row = btn.closest('tr');
+      var next = row.nextElementSibling;
+      // Skip batch-row
+      if (next && next.classList.contains('batch-row')) next = next.nextElementSibling;
+      var opening = btn.textContent === '★';
+      while (next && next.classList.contains('quality-tier-row')) {
+        if (opening) next.classList.remove('hidden');
+        else next.classList.add('hidden');
+        next = next.nextElementSibling;
+      }
+      btn.textContent = opening ? '★−' : '★';
+    }
+
     function toggleReagents(btn) {
       var row = btn.closest('tr');
       var next = row.nextElementSibling;
-      // Skip the batch-row (it's not toggled with reagents)
+      // Skip the batch-row and quality-tier-rows (not toggled with reagents)
       if (next && next.classList.contains('batch-row')) next = next.nextElementSibling;
+      while (next && next.classList.contains('quality-tier-row')) next = next.nextElementSibling;
       var opening = btn.textContent === '+';
       while (next && (next.classList.contains('reagent-row') || next.classList.contains('variant-row') || next.classList.contains('sub-reagent-row'))) {
         if (next.classList.contains('reagent-row')) {
@@ -757,6 +994,11 @@
           }
         }
         next = next.nextElementSibling;
+      }
+      // Toggle recipe-stats-row (placed after reagent rows)
+      if (next && next.classList.contains('recipe-stats-row')) {
+        if (opening) next.classList.remove('hidden');
+        else next.classList.add('hidden');
       }
       btn.textContent = opening ? '−' : '+';
     }

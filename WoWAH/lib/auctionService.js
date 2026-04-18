@@ -27,24 +27,36 @@ async function fetchAndSave(regionKey) {
     timeout: 15000,
   });
 
-  // Commodities never have bonus_lists or quality modifiers
+  // Group by (item_id, quality) — quality from modifier type 9 (0 = no quality tier)
   var grouped = {};
+  var priceLists = {};
   for (var i = 0; i < response.data.auctions.length; i++) {
     var a = response.data.auctions[i];
-    var key = a.item.id;
-    if (!grouped[key]) grouped[key] = { item_id: a.item.id, quantity: 0, unit_price: a.unit_price };
+    var quality = getQuality(a.item);
+    var key = a.item.id + '|' + quality;
+    if (!grouped[key]) {
+      grouped[key] = { item_id: a.item.id, quality: quality, quantity: 0, unit_price: a.unit_price };
+      priceLists[key] = [];
+    }
     grouped[key].quantity += a.quantity;
     if (a.unit_price < grouped[key].unit_price) grouped[key].unit_price = a.unit_price;
+    priceLists[key].push(a.unit_price);
+  }
+  // typical_price = mean of the 5 cheapest listings (more stable than the floor price)
+  for (var key in priceLists) {
+    var sorted = priceLists[key].slice().sort(function(x, y) { return x - y; });
+    var top5   = sorted.slice(0, 5);
+    grouped[key].typical_price = Math.round(top5.reduce(function(s, p) { return s + p; }, 0) / top5.length);
   }
   var rows = Object.values(grouped);
 
   db.transaction(function(rows, regionKey) {
     var insHistory = db.prepare("INSERT INTO price_history (item_id, quality, bonus_list, unit_price, quantity, region, recorded_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
-    var insCurrent = db.prepare("INSERT OR REPLACE INTO current_prices (item_id, quality, bonus_list, region, unit_price, quantity, recorded_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
+    var insCurrent = db.prepare("INSERT OR REPLACE INTO current_prices (item_id, quality, bonus_list, region, unit_price, quantity, typical_price, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))");
     db.prepare('DELETE FROM current_prices WHERE region = ?').run(regionKey);
     for (var i = 0; i < rows.length; i++) {
-      insHistory.run(rows[i].item_id, 0, '', rows[i].unit_price, rows[i].quantity, regionKey);
-      insCurrent.run(rows[i].item_id, 0, '', regionKey, rows[i].unit_price, rows[i].quantity);
+      insHistory.run(rows[i].item_id, rows[i].quality, '', rows[i].unit_price, rows[i].quantity, regionKey);
+      insCurrent.run(rows[i].item_id, rows[i].quality, '', regionKey, rows[i].unit_price, rows[i].quantity, rows[i].typical_price);
     }
   })(rows, regionKey);
 

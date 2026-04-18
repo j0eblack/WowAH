@@ -77,7 +77,7 @@ router.get('/flipping', function(req, res) {
       '  (MAX(crp.unit_price) - MIN(crp.unit_price)) AS spread, ' +
       '  COUNT(DISTINCT crp.connected_realm_id) AS realm_count ' +
       'FROM current_realm_prices crp ' +
-      'LEFT JOIN items i ON i.id = crp.item_id AND i.quality = crp.quality AND i.bonus_list = crp.bonus_list ' +
+      'LEFT JOIN items i ON i.id = crp.item_id AND i.quality = 0 AND i.bonus_list = \'\' ' +
       'WHERE crp.region = ? ';
 
     var params = [regionKey];
